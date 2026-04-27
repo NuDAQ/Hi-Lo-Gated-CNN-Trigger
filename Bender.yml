@@ -17,10 +17,10 @@ dependencies:
   hilo-trigger: { git: "git@github.com:NuDAQ/Hi-Lo-Trigger.git", version: "2.1.2" }
 
 sources:
-  - hw/rtl/CNN_FIFO_CONNECTOR.vhd
-  - hw/rtl/HILO_PATH_WRAPPER.vhd
-  - hw/rtl/TEMP_SYS_TOP.vhd
-  - target: sim
+  - hw/rtl/CNN_CHUNK_CAPTURE.vhd
+  - hw/rtl/HILO_CNN_TRIGGER.vhd
+
+  - target: simulation
     files:
-      - hw/rtl/sim/tb_temp_sys_top.sv
-      - hw/sim/TEMP_SYS_TOP_TB_WRAP.vhd
+      - hw/sim/tb_hilo_cnn_trigger.sv
+      - hw/sim/HILO_CNN_TRIGGER_TB_WRAP.vhd
