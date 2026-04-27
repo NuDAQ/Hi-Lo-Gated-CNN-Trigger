@@ -214,9 +214,7 @@ module tb_sanity;
             $finish;
         end
         $fwrite(f_wave, "# ev_id,sample_idx,ch0,ch1,ch2,ch3\n");
-        $fwrite(f_results,
-                "# ev_id,type,l0_fired,l0_time_ns,ev_start_ns,"
-                "cnn_fired,cnn_raw_hex,cnn_score_float,pass\n");
+        $fwrite(f_results, "# ev_id,type,l0_fired,l0_time_ns,ev_start_ns,cnn_fired,cnn_raw_hex,cnn_score_float,pass\n");
 
         // ------------------------------------------------------------------
         // Reset
