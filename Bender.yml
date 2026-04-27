@@ -20,7 +20,7 @@ sources:
   - hw/rtl/CNN_FIFO_CONNECTOR.vhd
   - hw/rtl/HILO_PATH_WRAPPER.vhd
   - hw/rtl/TEMP_SYS_TOP.vhd
-  - hw/rtl/sim/TEMP_SYS_TOP_TB_WRAP.vhd
   - target: sim
     files:
       - hw/rtl/sim/tb_temp_sys_top.sv
+      - hw/sim/TEMP_SYS_TOP_TB_WRAP.vhd
