@@ -26,13 +26,15 @@
 // the ring buffer. After N_PRIME + 8 batches per event the testbench waits
 // for CNN completion (or TIMEOUT_US).
 //
-// Run from the Vivado project directory or set SANITY_DATA_DIR accordingly.
+// Run via scripts/run_sanity_sim.sh (generates sanity_paths.svh first).
 // =============================================================================
 
-`ifndef SANITY_DATA_DIR
-  // Change to the absolute path of hw/sim/sanity_data on your machine.
-  `define SANITY_DATA_DIR "hw/sim/sanity_data"
-`endif
+// Absolute paths are injected by the shell script into:
+//   hw/sim/sanity_data/sanity_paths.svh
+// Defines provided:
+//   `CHUNK_SIG0  `CHUNK_SIG1  `CHUNK_SIG2  `CHUNK_NOISE0
+//   `WAVE_CSV    `RESULTS_TXT
+`include "sanity_data/sanity_paths.svh"
 
 module tb_sanity;
 
@@ -185,27 +187,28 @@ module tb_sanity;
         string fpath;
 
         // ------------------------------------------------------------------
-        // Load chunk hex files
+        // Load chunk hex files  (paths from sanity_paths.svh)
         // ------------------------------------------------------------------
-        $readmemh({`SANITY_DATA_DIR, "/chunk_sig0.hex"},   chunk_mem[0]);
-        $readmemh({`SANITY_DATA_DIR, "/chunk_sig1.hex"},   chunk_mem[1]);
-        $readmemh({`SANITY_DATA_DIR, "/chunk_sig2.hex"},   chunk_mem[2]);
-        $readmemh({`SANITY_DATA_DIR, "/chunk_noise0.hex"}, chunk_mem[3]);
+        $readmemh(`CHUNK_SIG0,   chunk_mem[0]);
+        $readmemh(`CHUNK_SIG1,   chunk_mem[1]);
+        $readmemh(`CHUNK_SIG2,   chunk_mem[2]);
+        $readmemh(`CHUNK_NOISE0, chunk_mem[3]);
 
         // Verify load
         if (chunk_mem[0][0] === 64'bx) begin
-            $display("[ERROR] Failed to load chunk_sig0.hex from %s", `SANITY_DATA_DIR);
-            $display("        Run prepare_sanity_chunks.py first.");
+            $display("[ERROR] Failed to load chunk_sig0.hex.");
+            $display("        Run: python3 scripts/prepare_sanity_chunks.py");
             $finish;
         end
 
         // ------------------------------------------------------------------
         // Open output log files
         // ------------------------------------------------------------------
-        f_wave    = $fopen({`SANITY_DATA_DIR, "/sanity_wave.csv"}, "w");
-        f_results = $fopen({`SANITY_DATA_DIR, "/sanity_results.txt"}, "w");
+        f_wave    = $fopen(`WAVE_CSV,    "w");
+        f_results = $fopen(`RESULTS_TXT, "w");
         if (f_wave == 0 || f_results == 0) begin
-            $display("[ERROR] Cannot open output log files in %s", `SANITY_DATA_DIR);
+            $display("[ERROR] Cannot open output log files.");
+            $display("        Check that sanity_data/ directory exists and is writable.");
             $finish;
         end
         $fwrite(f_wave, "# ev_id,sample_idx,ch0,ch1,ch2,ch3\n");
