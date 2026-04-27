@@ -20,6 +20,12 @@
 !analysis/
 !analysis/**
 
+!scripts/
+!scripts/**
+
+!build/
+!build/**
+
 !materials/
 !materials/**
 
