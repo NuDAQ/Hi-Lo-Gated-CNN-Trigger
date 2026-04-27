@@ -360,7 +360,9 @@ def main():
         emul_fires = pre_trig.any()
         if emul_fires != l0_fired:
             print(f"  NOTE ev{ev_id}: Python emulation={'fires' if emul_fires else 'no'}, "
-                  f"RTL={'fires' if l0_fired else 'no'} — may differ due to batch-boundary effects.")
+                  f"RTL={'fires' if l0_fired else 'no'}.")
+            print(f"         Differences expected: RTL uses batch-boundary carry-over; "
+                  f"Python emulation is a continuous-stream approximation.")
 
         fname = f"event_{ev_id}_{ev_type}.png"
         out_path = plot_dir / fname

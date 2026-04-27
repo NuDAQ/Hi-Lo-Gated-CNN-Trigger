@@ -133,36 +133,64 @@ bender script vivado -t simulation > "$BENDER_TCL"
 N_FILES=$(grep -c 'add_files' "$BENDER_TCL" 2>/dev/null || echo 0)
 echo "      $N_FILES file entries in bender output → ${BENDER_TCL}"
 
-# Extract file paths from:  add_files -norecurse {/path/to/file.ext}
-# Handles both single-file and potential multi-file lines.
+# ── Extract file paths from bender vivado TCL ────────────────────────────────
+# Bender generates:  set ROOT "/abs/path"
+#   then:  $ROOT/path/to/file.vhd \
+# We resolve $ROOT → actual path, then collect each .vhd/.v/.sv/.vh file.
 extract_paths() {
-    grep -oP '(?<=\{)[^}]+' "$BENDER_TCL" | tr -s ' ' '\n' | grep -v '^$'
+    # Read $ROOT definition from the TCL (handles paths with spaces via sed)
+    local tcl_root
+    tcl_root=$(grep '^set ROOT' "$BENDER_TCL" | sed 's/^set ROOT "\(.*\)"/\1/')
+
+    if [[ -z "$tcl_root" ]]; then
+        echo "WARNING: 'set ROOT' not found in bender TCL — trying absolute-path fallback." >&2
+        # Fallback: extract any absolute path with HDL extension
+        grep -oP '/[^\s"\\]+\.(vhd|vhdl|v|sv|vh)\b' "$BENDER_TCL"
+        return
+    fi
+
+    # Primary: paths written as $ROOT/relative/path
+    grep -oP '(?<=\$ROOT)/[^\s\\]+\.(vhd|vhdl|v|sv|vh)\b' "$BENDER_TCL" \
+        | sed "s|^|${tcl_root}|"
 }
+
+# Show first few lines of bender TCL for diagnostics
+echo "      First 3 lines of bender TCL:"
+head -3 "$BENDER_TCL" | sed 's/^/        /'
 
 VHDL_FILES=()
 VLOG_FILES=()
-SV_DEPS=()          # SV deps from bender (exclude our own TB)
+VLOG_INC_DIRS=()    # directories containing .vh headers (xvlog -i flag)
+SV_DEPS=()          # SV deps from bender (exclude our own TBs)
 
 while IFS= read -r path; do
     [[ -z "$path" ]] && continue
-    [[ "$path" == //* ]] && continue  # skip comment lines
     ext="${path##*.}"
     fname="${path##*/}"
     case "$ext" in
         vhd|vhdl)
             VHDL_FILES+=("$path") ;;
+        vh)
+            # Verilog header: add its directory as an include path
+            dir="$(dirname "$path")"
+            # Only add each directory once
+            [[ " ${VLOG_INC_DIRS[*]} " != *" ${dir} "* ]] && VLOG_INC_DIRS+=("$dir")
+            ;;
         v)
             VLOG_FILES+=("$path") ;;
         sv)
-            # Skip the full testbench — it has hardcoded paths not valid here.
             [[ "$fname" == "tb_hilo_cnn_trigger.sv" ]] && continue
-            # Skip tb_sanity.sv from bender list (we compile it separately).
             [[ "$fname" == "tb_sanity.sv" ]] && continue
             SV_DEPS+=("$path") ;;
     esac
 done < <(extract_paths)
 
-echo "      VHDL: ${#VHDL_FILES[@]}  Verilog: ${#VLOG_FILES[@]}  SV deps: ${#SV_DEPS[@]}"
+echo "      VHDL: ${#VHDL_FILES[@]}  Verilog: ${#VLOG_FILES[@]}  VH dirs: ${#VLOG_INC_DIRS[@]}  SV deps: ${#SV_DEPS[@]}"
+if [[ ${#VHDL_FILES[@]} -eq 0 && ${#VLOG_FILES[@]} -eq 0 ]]; then
+    echo "WARNING: No dependency files extracted from bender TCL."
+    echo "         Check ${BENDER_TCL} manually — first 10 non-empty lines:"
+    grep -v '^\s*$\|^#' "$BENDER_TCL" | head -10 | sed 's/^/         /'
+fi
 
 # ─── Step 4: Compile ──────────────────────────────────────────────────────────
 hr
@@ -180,9 +208,13 @@ fi
 # ── 4b. Verilog dependencies (HLS-generated CNN core, wrapper) ──
 if [ ${#VLOG_FILES[@]} -gt 0 ]; then
     echo "      xvlog  (deps): ${#VLOG_FILES[@]} files ..."
+    # Build -i flags for Verilog header include directories
+    INC_FLAGS=()
+    for d in "${VLOG_INC_DIRS[@]}"; do INC_FLAGS+=(-i "$d"); done
     xvlog \
         -work "$WORK" \
         --log "${LOG_DIR}/xvlog_deps.log" \
+        "${INC_FLAGS[@]}" \
         "${VLOG_FILES[@]}"
 fi
 

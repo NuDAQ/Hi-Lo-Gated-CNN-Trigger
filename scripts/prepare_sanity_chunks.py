@@ -175,9 +175,16 @@ def main():
     selected_signals = signal_candidates[:args.n_signals]
 
     # ------------------------------------------------------------------
-    # Scan noise events: find the quietest (lowest peak amplitude)
+    # Select noise event (label=0).
+    #
+    # ARIANNA context: thermal noise can have large transient amplitudes,
+    # so ALL events (signal and noise) may have large peak values.  We do
+    # NOT require a "quiet" noise event.  The Hi-Lo trigger may fire on
+    # noise too — the CNN is the actual discriminator.  We pick the noise
+    # event with the LOWEST peak so it is less likely to be confused with
+    # a signal by the CNN.
     # ------------------------------------------------------------------
-    print(f"\nScanning noise events (limit={args.scan_limit}) ...")
+    print(f"\nSelecting noise event (label=0) with lowest peak amplitude ...")
     noise_candidates = []
 
     for idx in noise_indices[:args.scan_limit]:
@@ -185,20 +192,19 @@ def main():
         if not hex_path.exists():
             continue
         data = load_hex_chunk(hex_path)
-        # Confirm it won't trigger Hi-Lo (no bipolar excursion above THRESH/2)
-        if not is_bipolar(data, args.thresh // 2):
-            peak = peak_amplitude(data)
-            noise_candidates.append((peak, int(idx), data))
+        noise_candidates.append((peak_amplitude(data), int(idx), data))
 
-    noise_candidates.sort(key=lambda x: x[0])  # sort by amplitude ascending (quietest first)
+    noise_candidates.sort(key=lambda x: x[0])  # quietest first
 
     if not noise_candidates:
-        print("  WARNING: no quiet noise events found. Using first noise event.")
-        idx = int(noise_indices[0])
-        data = load_hex_chunk(testhex_dir / f"test_input_sample{idx}.hex")
-        noise_candidates = [(peak_amplitude(data), idx, data)]
+        print("  ERROR: no label=0 events found in dataset.")
+        raise SystemExit(1)
 
     selected_noise = noise_candidates[0]
+    peak_n, idx_n, _ = selected_noise
+    bipolar_n = is_bipolar(_, args.thresh)
+    print(f"  Selected sample {idx_n}  peak={peak_n} ({peak_n/64:.1f}σ)  "
+          f"bipolar_at_thresh={'YES — Hi-Lo will fire' if bipolar_n else 'no'}")
 
     # ------------------------------------------------------------------
     # Copy hex files and write golden reference

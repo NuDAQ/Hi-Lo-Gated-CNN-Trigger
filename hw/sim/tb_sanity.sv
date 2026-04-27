@@ -57,8 +57,10 @@ module tb_sanity;
     // Per-event timeout (ns).  CNN inference typically takes ~25 µs.
     parameter real TIMEOUT_NS = 600_000.0;   // 600 µs
 
-    // CNN decision threshold: score = $signed(output_data[16:0]) / 256.0 > 0.5
-    // In raw integer: $signed(output_data[16:0]) > 128
+    // CNN decision threshold: score = $signed(output_data[16:0]) / 256.0
+    // Signal   pass: score > +0.5  →  raw integer > +128
+    // Noise    pass: score ≤ +0.5  →  raw integer ≤ +128
+    // (ARIANNA thermal noise can trigger Hi-Lo; the CNN is the discriminator)
     parameter int CNN_SCORE_THRESH = 128;
 
     // -------------------------------------------------------------------------
@@ -321,10 +323,20 @@ module tb_sanity;
                     $display("  Signal check: l0_fired=%0d  cnn_fired=%0d  cnn_score=%.4f  -> %s",
                              l0_fired, cnn_fired, cnn_score, pass ? "PASS" : "FAIL");
                 end else begin
-                    // Noise: L0 must NOT fire
-                    pass = !l0_fired;
-                    $display("  Noise check:  l0_fired=%0d  -> %s",
-                             l0_fired, pass ? "PASS" : "FAIL");
+                    // Noise: ARIANNA thermal noise can trigger Hi-Lo (that is expected).
+                    // The CNN is the discriminator — it must score LOW (≤ 0.5).
+                    // If L0 never fired, the CNN was never invoked; that also counts as pass.
+                    if (!l0_fired) begin
+                        pass = 1;
+                        $display("  Noise check:  l0_fired=0  (Hi-Lo did not fire)  -> PASS");
+                    end else if (!cnn_fired) begin
+                        pass = 0;
+                        $display("  Noise check:  l0_fired=1  cnn_fired=0  TIMEOUT  -> FAIL");
+                    end else begin
+                        pass = ($signed(cnn_raw[16:0]) <= CNN_SCORE_THRESH);
+                        $display("  Noise check:  l0_fired=1  cnn_score=%.4f  (must be ≤0.5)  -> %s",
+                                 cnn_score, pass ? "PASS" : "FAIL");
+                    end
                 end
 
                 if (pass) pass_count++;
