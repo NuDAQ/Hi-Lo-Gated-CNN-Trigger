@@ -172,21 +172,48 @@ module tb_sanity;
     endtask
 
     // -------------------------------------------------------------------------
+    // Async capture registers
+    // These always blocks run concurrently with the main initial block,
+    // so they correctly capture L0 / CNN results even if they fire during
+    // the ADC batch driving loop (before the main block's fork starts).
+    // -------------------------------------------------------------------------
+    logic        l0_cap_valid = 0;   // set on first posedge of l0_pre_trig
+    real         l0_cap_time  = -1.0;
+
+    logic [31:0] cnn_cap_data  = 0;
+    logic        cnn_cap_valid = 0;   // set on first CNN output handshake
+
+    // L0 capture — runs independently of the main initial block
+    always @(posedge l0_pre_trig) begin
+        if (!l0_cap_valid) begin
+            l0_cap_valid = 1;           // blocking: visible in same time step
+            l0_cap_time  = $realtime;
+            $display("  [%0t] ** L0_PRE_TRIG captured (async) **", $time);
+        end
+    end
+
+    // CNN output capture — on CNN clock
+    always @(posedge clk_cnn) begin
+        if (cnn_out_valid && cnn_out_ready && !cnn_cap_valid) begin
+            cnn_cap_data  = cnn_out_data;
+            cnn_cap_valid = 1;
+            $display("  [%0t] ** CNN_OUT captured: 0x%08h  score=%.4f **",
+                     $time, cnn_out_data,
+                     $itor($signed(cnn_out_data[16:0])) / 256.0);
+        end
+    end
+
+    // -------------------------------------------------------------------------
     // Main test
     // -------------------------------------------------------------------------
-    // Chunk types for logging (0-2 = signal, 3 = noise)
     string chunk_type [0:3] = '{"sig", "sig", "sig", "noise"};
-
     integer pass_count, fail_count;
     real    ev_start_time_ns;
-    integer l0_fired;
-    real    l0_time_ns;
-    integer cnn_fired;
-    logic [31:0] cnn_raw;
 
     initial begin : main_test
-        int ev, b, s, ch;
-        string fpath;
+        int ev, b, s;
+        int pass;
+        real cnn_score;
 
         // ------------------------------------------------------------------
         // Load chunk hex files  (paths from sanity_paths.svh)
@@ -196,7 +223,6 @@ module tb_sanity;
         $readmemh(`CHUNK_SIG2,   chunk_mem[2]);
         $readmemh(`CHUNK_NOISE0, chunk_mem[3]);
 
-        // Verify load
         if (chunk_mem[0][0] === 64'bx) begin
             $display("[ERROR] Failed to load chunk_sig0.hex.");
             $display("        Run: python3 scripts/prepare_sanity_chunks.py");
@@ -204,16 +230,15 @@ module tb_sanity;
         end
 
         // ------------------------------------------------------------------
-        // Open output log files
+        // Open log files
         // ------------------------------------------------------------------
         f_wave    = $fopen(`WAVE_CSV,    "w");
         f_results = $fopen(`RESULTS_TXT, "w");
         if (f_wave == 0 || f_results == 0) begin
-            $display("[ERROR] Cannot open output log files.");
-            $display("        Check that sanity_data/ directory exists and is writable.");
+            $display("[ERROR] Cannot open output log files — check sanity_data/ is writable.");
             $finish;
         end
-        $fwrite(f_wave, "# ev_id,sample_idx,ch0,ch1,ch2,ch3\n");
+        $fwrite(f_wave,    "# ev_id,sample_idx,ch0,ch1,ch2,ch3\n");
         $fwrite(f_results, "# ev_id,type,l0_fired,l0_time_ns,ev_start_ns,cnn_fired,cnn_raw_hex,cnn_score_float,pass\n");
 
         // ------------------------------------------------------------------
@@ -240,6 +265,13 @@ module tb_sanity;
         for (ev = 0; ev < 4; ev++) begin
             $display("\n=== Event %0d / 4  [%s] ===", ev, chunk_type[ev]);
 
+            // --- Clear async capture flags BEFORE driving any data ---
+            // (The always blocks above will set them when events occur.)
+            l0_cap_valid = 0;
+            l0_cap_time  = -1.0;
+            cnn_cap_valid = 0;
+            cnn_cap_data  = 0;
+
             // --- Prime ring buffer with N_PRIME zero batches ---
             for (b = 0; b < N_PRIME; b++) begin
                 @(negedge clk_adc);
@@ -247,106 +279,80 @@ module tb_sanity;
                 @(posedge clk_adc);
             end
 
-            // --- Inject 8 event batches and record waveform ---
-            l0_fired = 0;
-            cnn_fired = 0;
-            l0_time_ns = -1.0;
-            cnn_raw = 32'hx;
-
+            // --- Drive 8 event batches (L0 may fire DURING this loop) ---
             ev_start_time_ns = $realtime;
 
-            // Log all 256 event samples
             for (b = 0; b < 8; b++) begin
                 @(negedge clk_adc);
                 drive_event_batch(ev, b);
-                // Log the 32 samples of this batch
-                for (s = 0; s < 32; s++) begin
+                for (s = 0; s < 32; s++)
                     $fwrite(f_wave, "%0d,%0d,%0d,%0d,%0d,%0d\n",
                             ev, b*32+s,
                             $signed(adc_ch[0][s]), $signed(adc_ch[1][s]),
                             $signed(adc_ch[2][s]), $signed(adc_ch[3][s]));
-                end
                 @(posedge clk_adc);
             end
 
-            // Return to zero batches while waiting for results
+            // Keep driving zeros while we wait for CNN to respond
             @(negedge clk_adc);
             drive_zero_batch();
 
-            // --- Wait for L0 trigger and CNN result, with timeout ---
-            fork : ev_fork
-                // Branch 1: monitor L0_PRE_TRIG and CNN output
-                begin : monitor_thread
-                    // Wait for L0 trigger (anywhere after event data started)
-                    @(posedge l0_pre_trig);
-                    l0_fired   = 1;
-                    l0_time_ns = $realtime;
-                    $display("  [%0t] L0_PRE_TRIG fired  (%.0f ns after ev start)",
-                             $time, l0_time_ns - ev_start_time_ns);
-
-                    // Wait for CNN output
-                    @(posedge cnn_out_valid);
-                    cnn_fired = 1;
-                    cnn_raw   = cnn_out_data;
-                    $display("  [%0t] CNN_OUT_VALID  raw=0x%08h  score=%.4f",
-                             $time, cnn_raw,
-                             $itor($signed(cnn_raw[16:0])) / 256.0);
+            // --- Wait for L0 + CNN result, or timeout ---
+            // Use wait() (level-sensitive), NOT @(posedge ...) (edge-sensitive).
+            // This correctly handles the case where L0 already fired during
+            // batch driving above.
+            fork : wait_fork
+                begin : wait_branch
+                    wait(l0_cap_valid);   // returns immediately if already set
+                    $display("  [%0t] L0 captured at %.0f ns  (%.0f ns after ev start)",
+                             $time, l0_cap_time, l0_cap_time - ev_start_time_ns);
+                    wait(cnn_cap_valid);  // then wait for CNN result
                 end
-
-                // Branch 2: timeout watchdog
-                begin : timeout_thread
+                begin : timeout_branch
                     #(TIMEOUT_NS);
-                    if (!l0_fired)
+                    if (!l0_cap_valid)
                         $display("  [%0t] TIMEOUT — L0 did not fire within %.0f µs.",
-                                 $time, TIMEOUT_NS/1000.0);
-                    else if (!cnn_fired)
+                                 $time, TIMEOUT_NS / 1000.0);
+                    else
                         $display("  [%0t] TIMEOUT — CNN result not received within %.0f µs.",
-                                 $time, TIMEOUT_NS/1000.0);
+                                 $time, TIMEOUT_NS / 1000.0);
                 end
             join_any
-            disable ev_fork;
+            disable wait_fork;
 
-            // Continue feeding zeros while CNN processes (important for next event)
-            repeat(20) @(posedge clk_adc);
+            // Drain any remaining zeros and let handshakes settle before next event
+            repeat(200) @(posedge clk_cnn);
 
             // --- Pass/fail evaluation ---
-            begin
-                int pass;
-                real cnn_score;
-                cnn_score = $itor($signed(cnn_raw[16:0])) / 256.0;
+            cnn_score = $itor($signed(cnn_cap_data[16:0])) / 256.0;
 
-                if (chunk_type[ev] == "sig") begin
-                    // Signal: L0 must fire AND CNN must score > 0.5
-                    pass = l0_fired && cnn_fired && ($signed(cnn_raw[16:0]) > CNN_SCORE_THRESH);
-                    $display("  Signal check: l0_fired=%0d  cnn_fired=%0d  cnn_score=%.4f  -> %s",
-                             l0_fired, cnn_fired, cnn_score, pass ? "PASS" : "FAIL");
+            if (chunk_type[ev] == "sig") begin
+                pass = l0_cap_valid && cnn_cap_valid &&
+                       ($signed(cnn_cap_data[16:0]) > CNN_SCORE_THRESH);
+                $display("  Signal check: l0=%0d  cnn=%0d  score=%.4f  -> %s",
+                         l0_cap_valid, cnn_cap_valid, cnn_score, pass ? "PASS" : "FAIL");
+            end else begin
+                if (!l0_cap_valid) begin
+                    pass = 1;
+                    $display("  Noise check:  l0=0 (Hi-Lo did not fire)  -> PASS");
+                end else if (!cnn_cap_valid) begin
+                    pass = 0;
+                    $display("  Noise check:  l0=1  cnn=TIMEOUT  -> FAIL");
                 end else begin
-                    // Noise: ARIANNA thermal noise can trigger Hi-Lo (that is expected).
-                    // The CNN is the discriminator — it must score LOW (≤ 0.5).
-                    // If L0 never fired, the CNN was never invoked; that also counts as pass.
-                    if (!l0_fired) begin
-                        pass = 1;
-                        $display("  Noise check:  l0_fired=0  (Hi-Lo did not fire)  -> PASS");
-                    end else if (!cnn_fired) begin
-                        pass = 0;
-                        $display("  Noise check:  l0_fired=1  cnn_fired=0  TIMEOUT  -> FAIL");
-                    end else begin
-                        pass = ($signed(cnn_raw[16:0]) <= CNN_SCORE_THRESH);
-                        $display("  Noise check:  l0_fired=1  cnn_score=%.4f  (must be ≤0.5)  -> %s",
-                                 cnn_score, pass ? "PASS" : "FAIL");
-                    end
+                    pass = ($signed(cnn_cap_data[16:0]) <= CNN_SCORE_THRESH);
+                    $display("  Noise check:  l0=1  score=%.4f (must be ≤0.5)  -> %s",
+                             cnn_score, pass ? "PASS" : "FAIL");
                 end
-
-                if (pass) pass_count++;
-                else       fail_count++;
-
-                // Log result
-                $fwrite(f_results,
-                        "%0d,%s,%0d,%.1f,%.1f,%0d,0x%08h,%.6f,%0d\n",
-                        ev, chunk_type[ev],
-                        l0_fired, l0_time_ns, ev_start_time_ns,
-                        cnn_fired, cnn_raw, cnn_score, pass);
             end
+
+            if (pass) pass_count++;
+            else       fail_count++;
+
+            $fwrite(f_results,
+                    "%0d,%s,%0d,%.1f,%.1f,%0d,0x%08h,%.6f,%0d\n",
+                    ev, chunk_type[ev],
+                    l0_cap_valid, l0_cap_time, ev_start_time_ns,
+                    cnn_cap_valid, cnn_cap_data, cnn_score, pass);
         end
 
         // ------------------------------------------------------------------
@@ -356,17 +362,14 @@ module tb_sanity;
         $display("  SANITY TEST COMPLETE");
         $display("  Passed: %0d / 4", pass_count);
         $display("  Failed: %0d / 4", fail_count);
-        $display("  CHUNK_OVERFLOW at any point: %0d", chunk_overflow);
+        $display("  CHUNK_OVERFLOW: %0d", chunk_overflow);
         $display("========================================\n");
 
         $fclose(f_wave);
         $fclose(f_results);
 
-        if (fail_count == 0)
-            $display("[RESULT] ALL PASS");
-        else
-            $display("[RESULT] %0d FAILURES — check sanity_results.txt and sanity_wave.csv", fail_count);
-
+        $display(fail_count == 0 ? "[RESULT] ALL PASS" :
+                 "[RESULT] %0d FAILURES — check sanity_results.txt", fail_count);
         $finish;
     end
 
