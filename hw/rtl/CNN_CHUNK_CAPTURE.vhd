@@ -434,7 +434,13 @@ begin
                     when CC_IDLE =>
                         CNN_IN_VALID <= '0';
 
-                        if buf_written_cnn(0) = '1' then
+                        -- Guard: only start when the 4-phase ack handshake for
+                        -- this buffer is fully idle (buf_ack_cnn='0').
+                        -- Without this, CC_IDLE would re-trigger on the SAME
+                        -- buffer immediately after CC_ACK sets buf_ack_cnn='1',
+                        -- before the ADC domain has had time to clear
+                        -- buf_written_adc via CDC — causing a duplicate inference.
+                        if buf_written_cnn(0) = '1' and buf_ack_cnn(0) = '0' then
                             cnn_buf_id    <= 0;
                             cnn_base_addr <= (others => '0');
                             CNN_START     <= '1';
@@ -443,7 +449,7 @@ begin
                             stream_ptr    <= (others => '0');
                             cnn_state     <= CC_STREAM;
 
-                        elsif buf_written_cnn(1) = '1' then
+                        elsif buf_written_cnn(1) = '1' and buf_ack_cnn(1) = '0' then
                             cnn_buf_id    <= 1;
                             cnn_base_addr <= to_unsigned(256, 9);
                             CNN_START     <= '1';
