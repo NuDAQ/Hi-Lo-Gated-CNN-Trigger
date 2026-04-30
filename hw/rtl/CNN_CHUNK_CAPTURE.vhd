@@ -118,8 +118,11 @@ architecture rtl of CNN_CHUNK_CAPTURE is
     signal buf_ack_adc : std_logic_vector(1 downto 0) := (others => '0');
 
     -- RST synchronizer (ADC → CNN domain)
-    signal rst_s1  : std_logic := '0';
-    signal rst_cnn : std_logic := '0';
+    -- Initialized to '1' so RST_N_CNN starts at '0' (reset asserted) before
+    -- any CLK_CNN edges.  '0' would make RST_N_CNN='1' at t=0, meaning
+    -- cnn_core runs unreset and enters an undefined state before RST fires.
+    signal rst_s1  : std_logic := '1';
+    signal rst_cnn : std_logic := '1';
 
     -- =========================================================================
     -- ADC-domain FSM
