@@ -1,0 +1,74 @@
+#-----------------------------------------------------------
+# xsim v2023.2 (64-bit)
+# SW Build 4029153 on Fri Oct 13 20:13:54 MDT 2023
+# IP Build 4028589 on Sat Oct 14 00:45:43 MDT 2023
+# SharedData Build 4025554 on Tue Oct 10 17:18:54 MDT 2023
+# Start of session at: Thu Apr 30 15:25:43 2026
+# Process ID: 2348509
+# Current directory: /home/work1/Works/HiLoGatedCNNTrigger
+# Command line: xsim -log /home/work1/Works/HiLoGatedCNNTrigger/logs/sim/xsim_run.log -mode tcl -source {xsim.dir/tb_sanity_snapshot/xsim_script.tcl}
+# Log file: /home/work1/Works/HiLoGatedCNNTrigger/logs/sim/xsim_run.log
+# Journal file: /home/work1/Works/HiLoGatedCNNTrigger/xsim.jou
+# Running On: AlbertsUbuntu, OS: Linux, CPU Frequency: 2149.646 MHz, CPU Physical cores: 24, Host memory: 16441 MB
+#-----------------------------------------------------------
+source xsim.dir/tb_sanity_snapshot/xsim_script.tcl
+# xsim {tb_sanity_snapshot} -autoloadwcfg -runall
+Time resolution is 1 ps
+run -all
+Note: [CNN_CHUNK] buf_written_cnn = '0''0'
+Time: 0 ps  Iteration: 0  Process: /tb_sanity/uut/u_dut/u_CNN_CHUNK_CAPTURE/line__385  File: /home/work1/Works/HiLoGatedCNNTrigger/hw/rtl/CNN_CHUNK_CAPTURE.vhd
+Note: [CNN_CHUNK] CNN_IDLE = 'U'
+Time: 0 ps  Iteration: 0  Process: /tb_sanity/uut/u_dut/u_CNN_CHUNK_CAPTURE/line__380  File: /home/work1/Works/HiLoGatedCNNTrigger/hw/rtl/CNN_CHUNK_CAPTURE.vhd
+Note: [CNN_CHUNK] CNN_IDLE = 'X'
+Time: 0 ps  Iteration: 1  Process: /tb_sanity/uut/u_dut/u_CNN_CHUNK_CAPTURE/line__380  File: /home/work1/Works/HiLoGatedCNNTrigger/hw/rtl/CNN_CHUNK_CAPTURE.vhd
+Note: [CNN_CHUNK] CNN_IDLE = '0'
+Time: 0 ps  Iteration: 2  Process: /tb_sanity/uut/u_dut/u_CNN_CHUNK_CAPTURE/line__380  File: /home/work1/Works/HiLoGatedCNNTrigger/hw/rtl/CNN_CHUNK_CAPTURE.vhd
+  [0] ** L0_PRE_TRIG captured (async) **
+Note: [CNN_CHUNK] CNN_IDLE = '1'
+Time: 2500 ps  Iteration: 3  Process: /tb_sanity/uut/u_dut/u_CNN_CHUNK_CAPTURE/line__380  File: /home/work1/Works/HiLoGatedCNNTrigger/hw/rtl/CNN_CHUNK_CAPTURE.vhd
+[784000] Reset released. Starting sanity test.
+  THRESH=300  HILO_WIN=10  COINC_WIN=20  BIN_THR=1  N_PRIME=6
+
+=== Event 0 / 4  [sig] ===
+  [1040000] ** L0_PRE_TRIG captured (async) **
+  [1248000] L0 captured at 1040 ns  (64 ns after ev start)
+Note: [CNN_CHUNK] buf_written_cnn = '1''0'
+Time: 9397500 ps  Iteration: 1  Process: /tb_sanity/uut/u_dut/u_CNN_CHUNK_CAPTURE/line__385  File: /home/work1/Works/HiLoGatedCNNTrigger/hw/rtl/CNN_CHUNK_CAPTURE.vhd
+Note: [CNN_CHUNK] CNN_IDLE = '0'
+Time: 9402500 ps  Iteration: 3  Process: /tb_sanity/uut/u_dut/u_CNN_CHUNK_CAPTURE/line__380  File: /home/work1/Works/HiLoGatedCNNTrigger/hw/rtl/CNN_CHUNK_CAPTURE.vhd
+  [601248000] TIMEOUT — CNN result not received within 600 µs.
+  Signal check: l0=1  cnn=0  score=0.0000  -> FAIL
+
+=== Event 1 / 4  [sig] ===
+  [602512000] ** L0_PRE_TRIG captured (async) **
+  [602720000] L0 captured at 602512 ns  (64 ns after ev start)
+Note: [CNN_CHUNK] buf_written_cnn = '1''1'
+Time: 610872500 ps  Iteration: 1  Process: /tb_sanity/uut/u_dut/u_CNN_CHUNK_CAPTURE/line__385  File: /home/work1/Works/HiLoGatedCNNTrigger/hw/rtl/CNN_CHUNK_CAPTURE.vhd
+  [1202720000] TIMEOUT — CNN result not received within 600 µs.
+  Signal check: l0=1  cnn=0  score=0.0000  -> FAIL
+
+=== Event 2 / 4  [sig] ===
+  [1203984000] ** L0_PRE_TRIG captured (async) **
+  [1204192000] L0 captured at 1203984 ns  (64 ns after ev start)
+  [1804192000] TIMEOUT — CNN result not received within 600 µs.
+  Signal check: l0=1  cnn=0  score=0.0000  -> FAIL
+
+=== Event 3 / 4  [noise] ===
+  [1805456000] ** L0_PRE_TRIG captured (async) **
+  [1805664000] L0 captured at 1805456 ns  (64 ns after ev start)
+  [2405664000] TIMEOUT — CNN result not received within 600 µs.
+  Noise check:  l0=1  cnn=TIMEOUT  -> FAIL
+
+========================================
+  SANITY TEST COMPLETE
+  Passed: 0 / 4
+  Failed: 4 / 4
+  CHUNK_OVERFLOW: 1
+========================================
+
+ 921150771033451922120607058308878597077988903644745436107582759563047573012291963860072264991842426249115058897973180532          4
+$finish called at time : 2406662500 ps : File "/home/work1/Works/HiLoGatedCNNTrigger/hw/sim/tb_sanity.sv" Line 373
+run: Time (s): cpu = 00:00:00.03 ; elapsed = 00:00:14 . Memory (MB): peak = 1259.496 ; gain = 8.004 ; free physical = 1044 ; free virtual = 40003
+exit
+INFO: xsimkernel Simulation Memory Usage: 139140 KB (Peak: 179800 KB), Simulation CPU Usage: 13730 ms
+INFO: [Common 17-206] Exiting xsim at Thu Apr 30 15:25:59 2026...
