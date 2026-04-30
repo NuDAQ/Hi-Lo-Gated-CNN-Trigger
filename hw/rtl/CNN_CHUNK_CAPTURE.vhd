@@ -388,7 +388,13 @@ begin
                 cnn_buf_id    <= 0;
                 cnn_base_addr <= (others => '0');
             else
-                CNN_START <= '0';  -- default: deasserted
+                -- ap_ctrl_hs protocol: hold CNN_START (ap_start) high until
+                -- CNN_READY (ap_ready) fires to confirm the CNN has accepted
+                -- the start.  Do NOT use a default '0' here — that would clear
+                -- it every cycle and the HLS core would never register it.
+                if CNN_READY = '1' then
+                    CNN_START <= '0';
+                end if;
 
                 -- 4-phase handshake: CNN clears its ack once the ADC has
                 -- cleared buf_written (visible via buf_written_cnn going low).
