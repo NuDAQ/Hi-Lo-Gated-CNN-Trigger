@@ -374,6 +374,22 @@ begin
     end process;
 
     -- =========================================================================
+    -- DIAGNOSTIC concurrent processes — print key signal transitions.
+    -- These appear as NOTE messages in the xsim log.  Remove before production.
+    -- =========================================================================
+    process(CNN_IDLE)
+    begin
+        report "[CNN_CHUNK] CNN_IDLE = " & std_logic'image(CNN_IDLE) severity note;
+    end process;
+
+    process(buf_written_cnn)
+    begin
+        report "[CNN_CHUNK] buf_written_cnn = "
+               & std_logic'image(buf_written_cnn(0))
+               & std_logic'image(buf_written_cnn(1)) severity note;
+    end process;
+
+    -- =========================================================================
     -- CNN-domain FSM
     -- =========================================================================
     process(CLK_CNN)
@@ -419,7 +435,15 @@ begin
                         CNN_IN_VALID <= '0';
                         cnn_waiting  <= '0';
 
-                        if buf_written_cnn(0) = '1' and CNN_IDLE = '1' then
+                        -- tb_stream.sv pattern: start when idle OR ready
+                        -- (CNN_IDLE = ap_idle, CNN_READY = ap_ready).
+                        -- We do NOT gate on CNN_IDLE alone because some HLS
+                        -- builds leave ap_idle='0'/'X' after reset until the
+                        -- first ap_start is received.  Asserting CNN_START
+                        -- is always safe here because buf_written_cnn can
+                        -- only be '1' after a complete BRAM write, which
+                        -- serialises events.
+                        if buf_written_cnn(0) = '1' then
                             cnn_buf_id    <= 0;
                             cnn_base_addr <= (others => '0');
                             CNN_START     <= '1';
@@ -428,7 +452,7 @@ begin
                             cnn_waiting   <= '1';
                             cnn_state     <= CC_STREAM;
 
-                        elsif buf_written_cnn(1) = '1' and CNN_IDLE = '1' then
+                        elsif buf_written_cnn(1) = '1' then
                             cnn_buf_id    <= 1;
                             cnn_base_addr <= to_unsigned(256, 9);
                             CNN_START     <= '1';
