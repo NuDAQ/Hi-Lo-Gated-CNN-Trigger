@@ -143,8 +143,9 @@ architecture rtl of CNN_CHUNK_CAPTURE is
 
     signal cnn_base_addr : unsigned(8 downto 0) := (others => '0'); -- 0 or 256
     signal stream_ptr    : unsigned(7 downto 0) := (others => '0'); -- word 0..255
-    signal cnn_waiting   : std_logic            := '0'; -- BRAM read in-flight
     signal cnn_buf_id    : integer range 0 to 1 := 0;
+    -- rd_addr / rd_data / cnn_waiting removed: BRAM is now read directly inside
+    -- the clocked CNN FSM process (no separate read process needed).
 
     -- =========================================================================
     -- Helper: pack one ADC sample (4 channels) into 64 bits
@@ -189,15 +190,11 @@ begin
     end process;
 
     -- =========================================================================
-    -- BRAM Port B — read (CLK_CNN), 1-cycle synchronous latency
-    -- rd_data is valid at the rising edge AFTER rd_addr is presented.
-    -- =========================================================================
-    process(CLK_CNN)
-    begin
-        if rising_edge(CLK_CNN) then
-            rd_data <= bram(to_integer(rd_addr));
-        end if;
-    end process;
+    -- BRAM read is now performed directly inside the CNN FSM process below.
+    -- Direct indexing in a clocked process gives exactly the same 1-cycle
+    -- registered semantics as the old separate read process, but allows the
+    -- CNN FSM to issue the read AND present valid data in consecutive cycles
+    -- without a cnn_waiting bubble — matching tb_stream.sv's behaviour.
 
     -- =========================================================================
     -- CDC: buf_written (ADC → CNN), 2-FF synchronizer
@@ -401,9 +398,7 @@ begin
                 CNN_IN_VALID  <= '0';
                 CNN_IN_DATA   <= (others => '0');
                 buf_ack_cnn   <= (others => '0');
-                rd_addr       <= (others => '0');
                 stream_ptr    <= (others => '0');
-                cnn_waiting   <= '0';
                 cnn_buf_id    <= 0;
                 cnn_base_addr <= (others => '0');
             else
@@ -431,80 +426,63 @@ begin
                     -- Prefer buffer 0. Require CNN core to be idle.
                     -- Issue first BRAM read on entry to CC_STREAM.
                     -- ----------------------------------------------------------
+                    -- ----------------------------------------------------------
+                    -- CC_IDLE: wait for a buffer to be ready, then start the CNN
+                    -- and present the first word simultaneously — exactly matching
+                    -- tb_stream.sv which raises start and input_valid together.
+                    -- ----------------------------------------------------------
                     when CC_IDLE =>
                         CNN_IN_VALID <= '0';
-                        cnn_waiting  <= '0';
 
-                        -- tb_stream.sv pattern: start when idle OR ready
-                        -- (CNN_IDLE = ap_idle, CNN_READY = ap_ready).
-                        -- We do NOT gate on CNN_IDLE alone because some HLS
-                        -- builds leave ap_idle='0'/'X' after reset until the
-                        -- first ap_start is received.  Asserting CNN_START
-                        -- is always safe here because buf_written_cnn can
-                        -- only be '1' after a complete BRAM write, which
-                        -- serialises events.
                         if buf_written_cnn(0) = '1' then
                             cnn_buf_id    <= 0;
                             cnn_base_addr <= (others => '0');
                             CNN_START     <= '1';
-                            rd_addr       <= (others => '0');   -- pre-issue word 0
+                            CNN_IN_VALID  <= '1';
+                            CNN_IN_DATA   <= bram(0);   -- word 0 of buffer 0
                             stream_ptr    <= (others => '0');
-                            cnn_waiting   <= '1';
                             cnn_state     <= CC_STREAM;
 
                         elsif buf_written_cnn(1) = '1' then
                             cnn_buf_id    <= 1;
                             cnn_base_addr <= to_unsigned(256, 9);
                             CNN_START     <= '1';
-                            rd_addr       <= to_unsigned(256, 9);
+                            CNN_IN_VALID  <= '1';
+                            CNN_IN_DATA   <= bram(256); -- word 0 of buffer 1
                             stream_ptr    <= (others => '0');
-                            cnn_waiting   <= '1';
                             cnn_state     <= CC_STREAM;
                         end if;
 
                     -- ----------------------------------------------------------
                     -- CC_STREAM: feed 256 × 64-bit words to the CNN via AXI-S.
                     --
-                    -- BRAM synchronous read latency = 1 cycle:
-                    --   Cycle 0 (entry / after each consume): rd_addr is registered;
-                    --     BRAM sees the new address at the NEXT rising edge.
-                    --   cnn_waiting = '1' for that one wait cycle.
-                    --   Cycle 1 (cnn_waiting='1'→'0'): BRAM output is still from
-                    --     the previous rd_addr — do NOT use it yet.
-                    --   Cycle 2 (cnn_waiting='0'): rd_data = bram[issued_addr]. ✓
-                    --
-                    -- Throughput: 1 word per 2 CLK_CNN cycles (100 MHz effective).
-                    -- Back-pressure: CNN_IN_VALID held; no new read issued until
-                    --   CNN_IN_READY='1'.
+                    -- Matches tb_stream.sv exactly:
+                    --   • CNN_IN_VALID stays '1' for all 256 words (no bubbles).
+                    --   • CNN_IN_DATA is pre-registered in the clocked process:
+                    --       At CC_IDLE we assign CNN_IN_DATA = bram(base+0).
+                    --       After READY='1' on word N we assign bram(base+N+1),
+                    --       which appears on CNN_IN_DATA the next cycle. ✓
+                    --   • CNN_START is held until CNN_READY fires (ap_ctrl_hs).
+                    -- Throughput: 1 word per CLK_CNN cycle (200 MHz effective).
+                    -- Back-pressure: CNN_IN_VALID held; CNN_IN_DATA unchanged.
                     -- ----------------------------------------------------------
                     when CC_STREAM =>
-                        if cnn_waiting = '1' then
-                            -- Wait for BRAM output to settle — do not present data.
-                            cnn_waiting  <= '0';
-                            CNN_IN_VALID <= '0';
+                        CNN_IN_VALID <= '1';
 
-                        else
-                            -- rd_data is now valid for the current stream_ptr word.
-                            CNN_IN_VALID <= '1';
-                            CNN_IN_DATA  <= rd_data;
-
-                            if CNN_IN_READY = '1' then
-                                -- Word accepted by CNN core.
-                                if stream_ptr = 255 then
-                                    -- Last word consumed.
-                                    CNN_IN_VALID <= '0';
-                                    cnn_state    <= CC_WAIT_DONE;
-                                else
-                                    -- Issue next BRAM read; hold VALID low for 1 cycle.
-                                    stream_ptr <= stream_ptr + 1;
-                                    rd_addr    <= cnn_base_addr
-                                                  + resize(stream_ptr + 1, 9);
-                                    CNN_IN_VALID <= '0';
-                                    cnn_waiting  <= '1';
-                                end if;
+                        if CNN_IN_READY = '1' then
+                            if stream_ptr = 255 then
+                                CNN_IN_VALID <= '0';
+                                cnn_state    <= CC_WAIT_DONE;
+                            else
+                                stream_ptr  <= stream_ptr + 1;
+                                -- Pre-register the NEXT word so it is ready on
+                                -- the following clock cycle — no bubble.
+                                CNN_IN_DATA <= bram(to_integer(
+                                                  cnn_base_addr
+                                                  + resize(stream_ptr + 1, 9)));
                             end if;
-                            -- CNN_IN_READY='0': hold VALID='1'; BRAM holds rd_data.
                         end if;
+                        -- CNN_IN_READY='0': hold VALID='1', DATA unchanged.
 
                     -- ----------------------------------------------------------
                     when CC_WAIT_DONE =>
