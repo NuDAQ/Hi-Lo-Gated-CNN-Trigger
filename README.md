@@ -113,6 +113,101 @@ captures the next. A third concurrent trigger is dropped and `CHUNK_OVERFLOW`
 is set (sticky until `RST`). Wire `CHUNK_OVERFLOW` to an ILA probe or a
 slow-control status register for run-time monitoring.
 
+#### CNN_CHUNK_CAPTURE Internal State Machines
+
+**ADC FSM (CLK_ADC)**
+
+| State       | Action                                                                             |
+|-------------|------------------------------------------------------------------------------------|
+| `ADC_IDLE`  | Continuously overwrites a 4-slot ring buffer (each slot = one 32-sample batch). PRE_TRIGGER has a 2-cycle pipeline latency, so the triggering batch has already landed in `ring_buf[3]` when `L0_PRE_TRIG` rises. |
+| `ADC_POST`  | Captures the 4 batches following the trigger (128 post-trigger samples).           |
+| `ADC_WRITE` | Writes all 256 words (ring + post) to the free BRAM buffer at full CLK_ADC rate. If both buffers are occupied, sets `CHUNK_OVERFLOW` sticky flag and returns to `ADC_IDLE` without writing. |
+
+**CNN FSM (CLK_CNN)**
+
+| State          | Action                                                                                                     |
+|----------------|------------------------------------------------------------------------------------------------------------|
+| `CC_IDLE`      | Polls `buf_written_cnn` (2-FF synchronized). Guard: `buf_written_cnn='1' AND buf_ack_cnn='0'` — the second term prevents a second inference on the same buffer while the ACK is propagating back. |
+| `CC_STREAM`    | Asserts `CNN_START` + `CNN_IN_VALID` + first BRAM word simultaneously on the first CLK_CNN edge. Holds `CNN_IN_VALID` high for all 256 words with no gaps. Clears `CNN_START` only when `CNN_READY` rises (`ap_ctrl_hs` requirement). |
+| `CC_WAIT_DONE` | Waits for `CNN_OUT_VALID` (equivalent to `ap_done`).                                                       |
+| `CC_ACK`       | Sets `buf_ack_cnn` to release the buffer back to the ADC side; returns to `CC_IDLE`.                       |
+
+**CDC Handshake Protocol**
+
+The handshake uses a 4-phase set/clear protocol, not a single-cycle pulse:
+
+1. ADC side sets `buf_written_adc` (CLK_ADC domain) after BRAM write completes.
+2. `buf_written_cnn` is the 2-FF synchronized copy visible in CLK_CNN domain.
+3. CNN side sets `buf_ack_cnn` (CLK_CNN domain) after inference completes.
+4. `buf_ack_adc` (synchronized back to CLK_ADC) clears `buf_written_adc`.
+
+Both `buf_written_adc` and `buf_ack_cnn` are held until the other side acknowledges. This tolerates arbitrary clock-domain skew without a pulse-stretcher.
+
+**RST Synchronizer Initialization**
+
+The 2-FF RST synchronizer signals (`rst_s1`, `rst_cnn`) are declared with initial value `'1'`:
+
+```vhdl
+signal rst_s1  : std_logic := '1';
+signal rst_cnn : std_logic := '1';
+```
+
+This sets `RST_N_CNN = '0'` (active-low) at simulation time 0 — before any `CLK_CNN` edges — so `cnn_core` receives a proper reset from the start. Without this, XSim leaves `ap_idle` uninitialized (`'x'`) because the HLS-generated Verilog uses blocking assignments whose initial values depend on reset.
+
+## Simulation
+
+### Sanity Test
+
+`scripts/run_sanity_sim.sh` runs a self-contained XSim batch simulation against
+3 signal and 1 noise events from the `cnn-core-wrapper` test dataset.
+
+**Prerequisites**
+
+- Vivado 2023.x (or compatible): `xvhdl`, `xvlog`, `xelab`, `xsim` on PATH.
+- `bender update` completed (all checkouts present).
+- Python 3 with `numpy` and `matplotlib`.
+
+**Running**
+
+```bash
+cd <project root>
+bash scripts/run_sanity_sim.sh
+```
+
+Steps executed by the script:
+
+1. `prepare_sanity_chunks.py` — scans `cnn-core-wrapper/testhex_stream/` for bipolar
+   signal events (any channel with both a sample > +THRESH and a sample < −THRESH).
+   Copies 3 signal + 1 noise hex files to `hw/sim/sanity_data/`.
+2. Generates `hw/sim/sanity_data/sanity_paths.svh` with absolute paths for
+   `$readmemh` (Verilog does not accept relative paths in XSim).
+3. Compiles RTL: `xvhdl` for VHDL files, `xvlog -sv` for SystemVerilog.
+4. Elaborates with `xelab`, runs with `xsim --runall`.
+5. Calls `plot_sanity_results.py` → `hw/sim/sanity_data/sanity_plots.png`.
+
+**What the test verifies**
+
+| Check                          | Expected outcome                                          |
+|-------------------------------|-----------------------------------------------------------|
+| `L0_PRE_TRIG` for signal events | Fires within 2 ADC cycles (64 ns) of the triggering batch |
+| `L0_PRE_TRIG` for noise event   | Does not fire (or CNN score ≤ +0.5 if it does)          |
+| CNN output for signal events   | `$signed(CNN_OUT_DATA[16:0]) / 256.0 > +0.5`            |
+| CNN inference latency          | Typically 10–30 µs at 200 MHz (256 words at full throughput) |
+| `CHUNK_OVERFLOW`               | Set during high-amplitude events (expected — see Known Limitations) |
+
+Pass/fail results are written to `hw/sim/sanity_data/sanity_results.txt`.
+ADC waveforms (all 4 events × 256 samples) are written to `sanity_wave.csv`.
+
+**Diagnosing failures**
+
+```bash
+python3 scripts/diagnose_sanity.py --thresh 300
+```
+
+This checks hex file format, bipolar threshold crossings, Python Hi-Lo emulation,
+waveform consistency between `sanity_wave.csv` and the source hex files, and
+prints a per-event summary of the simulation results.
+
 ## Build Flow
 
 ```bash
@@ -133,6 +228,36 @@ source add_sources.tcl
 ```
 Add `.xdc` constraint files manually (not managed by Bender).
 
+## Known Limitations
+
+1. **Capture window for high-amplitude sanity data.**
+   The sanity chunks are taken from the `cnn-core-wrapper` test dataset, where
+   data is pre-scaled to ap_fixed<12,6> range (peak amplitude ~±2000 counts).
+   With THRESH=300, `L0_PRE_TRIG` fires on the first ADC batch of the event.
+   At that point the 4-slot pre-trigger ring buffer holds the 3 priming
+   zero-batches (fed before the event) plus batch 0 of the event. The CNN
+   therefore receives `[96 zeros | event samples 0–159]` rather than the full
+   256-sample event window. Events whose CNN score depends on the later half
+   of the waveform will be misclassified. This is a test configuration issue;
+   the RTL window logic is correct.
+
+2. **Normalization between raw ADC and CNN input scale.**
+   The CNN was trained on data normalized to approximately `ADC_count / noise_σ`.
+   In hardware, raw ADC values span ±2048 counts while the CNN expects inputs
+   in the ap_fixed<12,6> range (±32 before the decimal point). A pre-processing
+   stage — divide by the per-channel noise σ, clamp to ±2047 — must be inserted
+   between the ADC and `CNN_CHUNK_CAPTURE` before production deployment. The
+   current RTL passes raw ADC data directly, which is correct for end-to-end
+   simulation of the pipeline but not for hardware deployment against physical ADC inputs.
+
+3. **CHUNK_OVERFLOW set during high-amplitude events.**
+   A single signal event with amplitude well above THRESH can cause
+   `L0_PRE_TRIG` to re-assert during the `ADC_POST` capture phase, because
+   successive batches continue to exceed the bipolar threshold. The ADC FSM
+   discards these secondary triggers (buffer is already occupied) and sets
+   `CHUNK_OVERFLOW`. This is expected behavior; it does not indicate a timing
+   collision between separate events.
+
 ## Developer Notes
 
 - **Updating the CNN model**: replace `models/hgq_config_*.keras` in the
@@ -148,6 +273,18 @@ Add `.xdc` constraint files manually (not managed by Bender).
   flat SV vector to `adc_data4_type`. Packing convention must match the
   generate block in `tb_hilo_cnn_trigger.sv` — both use MSB-first, ch0 at
   the low end.
+- **ap_ctrl_hs protocol (WRAPPER_TOP / cnn_core)**:
+  `CNN_START` must be held high until `CNN_READY` (ap_ready) rises. A
+  single-cycle pulse is not sufficient — the HLS core samples ap_start on the
+  ap_ready rising edge, not on the first assertion.
+  `CNN_IN_VALID` must be asserted on the same clock edge as `CNN_START`, with
+  the first input word already present on `CNN_IN_DATA`. Any bubble in the
+  input stream stalls the ap_fixed<12,6> datapath inside the HLS core and may
+  cause incorrect inference results.
+- **Diagnostic `report` statements**: `CNN_CHUNK_CAPTURE.vhd` contains
+  two concurrent `process` blocks that emit VHDL `report` messages on changes
+  to `CNN_IDLE` and `buf_written_cnn`. These should be removed before
+  synthesizing for hardware.
 
 ## License
 This project is licensed under the SHL-2.1 License. See the [LICENSE](LICENSE).
@@ -155,9 +292,9 @@ This project is licensed under the SHL-2.1 License. See the [LICENSE](LICENSE).
 ---
 > The remaining part is for developers. End-users should focus on the above sections only.
 
-## Bender How-To
+## Bender
 
-More information about Bender can be found [here](https://github.com/pulp-platform/bender).
+This project supports the usage of Bender, a dependency management tool for hardware design projects which provides a way to define dependencies among IPs, execute unit tests, and verify that the source files are valid input for various simulation and synthesis tools. For more information regarding the installation and the usage of Bender please look at its repo [link](https://github.com/pulp-platform/bender).
 
 1. Add source files to your working directory or declare new external IPs, in `Bender.yml`.
 2. `Bender Update`.
