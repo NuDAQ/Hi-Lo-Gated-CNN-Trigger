@@ -23,4 +23,6 @@ sources:
   - target: simulation
     files:
       - hw/sim/tb_hilo_cnn_trigger.sv
+      - hw/sim/tb_sanity.sv
+      - hw/sim/tb_thermal.sv
       - hw/sim/HILO_CNN_TRIGGER_TB_WRAP.vhd
