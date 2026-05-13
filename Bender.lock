@@ -13,8 +13,8 @@ packages:
     dependencies:
     - cnn-core
   hilo-trigger:
-    revision: 14c322dbe621537d366b9096c1d85fbd2027aba1
-    version: 2.2.2
+    revision: afa785e594218ca9c80e62a1767898be7daefebc
+    version: 2.2.3
     source:
       Git: git@github.com:NuDAQ/Hi-Lo-Trigger.git
     dependencies: []
