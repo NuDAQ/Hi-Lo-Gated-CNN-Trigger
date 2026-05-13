@@ -3,13 +3,13 @@
 # SW Build 4029153 on Fri Oct 13 20:13:54 MDT 2023
 # IP Build 4028589 on Sat Oct 14 00:45:43 MDT 2023
 # SharedData Build 4025554 on Tue Oct 10 17:18:54 MDT 2023
-# Start of session at: Tue May 12 20:10:55 2026
-# Process ID: 44949
+# Start of session at: Tue May 12 19:44:20 2026
+# Process ID: 43809
 # Current directory: /home/work1/Works/HiLoGatedCNNTrigger
 # Command line: xsim -log /home/work1/Works/HiLoGatedCNNTrigger/logs/sim/xsim_thermal.log -mode tcl -source {xsim.dir/tb_thermal_snapshot/xsim_script.tcl}
 # Log file: /home/work1/Works/HiLoGatedCNNTrigger/logs/sim/xsim_thermal.log
 # Journal file: /home/work1/Works/HiLoGatedCNNTrigger/xsim.jou
-# Running On: AlbertsUbuntu, OS: Linux, CPU Frequency: 1354.055 MHz, CPU Physical cores: 24, Host memory: 16441 MB
+# Running On: AlbertsUbuntu, OS: Linux, CPU Frequency: 829.406 MHz, CPU Physical cores: 24, Host memory: 16441 MB
 #-----------------------------------------------------------
 source xsim.dir/tb_thermal_snapshot/xsim_script.tcl
 # xsim {tb_thermal_snapshot} -autoloadwcfg -runall
@@ -52,6 +52,6 @@ Time: 2022527500 ps  Iteration: 1  Process: /tb_thermal(P_THRESH=12'b011000011)/
   Chunks captured : 3 / 3
   CHUNK_OVERFLOW  : 1
 $finish called at time : 4026507500 ps : File "/home/work1/Works/HiLoGatedCNNTrigger/hw/sim/tb_thermal.sv" Line 330
-run: Time (s): cpu = 00:00:00.03 ; elapsed = 00:00:09 . Memory (MB): peak = 1315.492 ; gain = 0.000 ; free physical = 998 ; free virtual = 44252
+run: Time (s): cpu = 00:00:00.03 ; elapsed = 00:00:08 . Memory (MB): peak = 1259.496 ; gain = 8.004 ; free physical = 441 ; free virtual = 44398
 exit
-INFO: [Common 17-206] Exiting xsim at Tue May 12 20:11:06 2026...
+INFO: [Common 17-206] Exiting xsim at Tue May 12 19:44:31 2026...
