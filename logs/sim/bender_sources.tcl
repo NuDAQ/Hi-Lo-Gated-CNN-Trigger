@@ -123,6 +123,8 @@ add_files -norecurse -fileset [current_fileset] [list \
 
 add_files -norecurse -fileset [current_fileset] [list \
     $ROOT/hw/sim/tb_hilo_cnn_trigger.sv \
+    $ROOT/hw/sim/tb_sanity.sv \
+    $ROOT/hw/sim/tb_thermal.sv \
 ]
 
 add_files -norecurse -fileset [current_fileset] [list \
