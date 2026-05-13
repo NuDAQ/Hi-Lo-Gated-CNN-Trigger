@@ -286,9 +286,12 @@ def main():
     print(f"  Plots  : {plot_dir}")
     print(f"  Chunks : {n_total}  ({n_cnn} with CNN output)")
     for _, r in results_df.iterrows():
-        score = float(r["cnn_score_float"]) if int(r["cnn_fired"]) else float("nan")
-        print(f"  chunk {int(r['chunk_id'])}: score={score:.4f}  "
-              f"({'<0.5 — correct (noise)' if score < 0.5 else '>0.5 — unexpected'})")
+        if int(r["cnn_fired"]):
+            score = float(r["cnn_score_float"])
+            verdict = "<0.5 — correct (noise)" if score < 0.5 else ">0.5 — unexpected"
+            print(f"  chunk {int(r['chunk_id'])}: score={score:.4f}  ({verdict})")
+        else:
+            print(f"  chunk {int(r['chunk_id'])}: no CNN output (timeout)")
     print(f"{'='*50}\n")
 
 
