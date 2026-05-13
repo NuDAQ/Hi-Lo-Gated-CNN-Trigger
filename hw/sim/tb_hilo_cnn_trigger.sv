@@ -10,9 +10,9 @@
 //   CLK_ADC : 31.25 MHz  (32 ns period) — 1 GHz ADC / 32 samples per batch
 //   CLK_CNN : 200  MHz  ( 5 ns period)
 //
-// ADC interface: 4 channels × 32 samples × 12-bit (two's complement)
-// Flat vector   : 4 × 32 × 12 = 1536 bits, MSB-first packing
-//   flat[1535 - (ch*32+s)*12 -: 12] ↔ adc_data4_type(ch)(s)
+// ADC interface: 4 channels × 16 samples × 12-bit (two's complement)
+// Flat vector   : 4 × 16 × 12 = 768 bits, MSB-first packing
+//   flat[767 - (ch*16+s)*12 -: 12] ↔ adc_data4_type(ch)(s)
 //
 // Test strategy:
 //   Background: algorithmic Gaussian noise, amplitude ~σ (always below THRESH)
@@ -46,16 +46,16 @@ module tb_hilo_cnn_trigger;
     reg  data_str;
 
     // Per-channel, per-sample ADC values (12-bit two's complement)
-    reg [11:0] adc_ch [0:3][0:31];
+    reg [11:0] adc_ch [0:3][0:15];
 
     // Flat packed vector for the VHDL wrapper port
-    // Packing: flat[1535 - (ch*32+s)*12 -: 12] = adc_ch[ch][s]
-    wire [1535:0] adc_data4_flat;
+    // Packing: flat[767 - (ch*16+s)*12 -: 12] = adc_ch[ch][s]
+    wire [767:0] adc_data4_flat;
     genvar gi, gj;
     generate
         for (gi = 0; gi < 4; gi++) begin : gen_ch
-            for (gj = 0; gj < 32; gj++) begin : gen_s
-                assign adc_data4_flat[1535 - (gi*32 + gj)*12 -: 12] = adc_ch[gi][gj];
+            for (gj = 0; gj < 16; gj++) begin : gen_s
+                assign adc_data4_flat[767 - (gi*16 + gj)*12 -: 12] = adc_ch[gi][gj];
             end
         end
     endgenerate
@@ -135,7 +135,7 @@ module tb_hilo_cnn_trigger;
     always @(posedge clk_adc) begin
         if (data_str && !injecting_event) begin
             for (int c = 0; c < 4; c++) begin
-                for (int s = 0; s < 32; s++) begin
+                for (int s = 0; s < 16; s++) begin
                     // Noise centred at 0, amplitude < THRESH (1700)
                     adc_ch[c][s] <= 12'(($urandom % 256) - 128);
                 end
@@ -183,7 +183,7 @@ module tb_hilo_cnn_trigger;
         cnn_out_ready = 1;
         injecting_event = 0;
         for (int c = 0; c < 4; c++)
-            for (int s = 0; s < 32; s++)
+            for (int s = 0; s < 16; s++)
                 adc_ch[c][s] = 12'h000;
 
         repeat(20) @(posedge clk_adc);
@@ -225,12 +225,12 @@ module tb_hilo_cnn_trigger;
                      $time, rand_event_idx, cur_label);
             $display("===================================================");
 
-            // 3. Inject: 8 batches × 32 samples = 256 timesteps
+            // 3. Inject: 16 batches × 16 samples = 256 timesteps
             injecting_event = 1;
-            for (int batch = 0; batch < 8; batch++) begin
+            for (int batch = 0; batch < 16; batch++) begin
                 @(posedge clk_adc);
-                for (int s = 0; s < 32; s++) begin
-                    mem_base = rand_event_idx * 256 + batch * 32 + s;
+                for (int s = 0; s < 16; s++) begin
+                    mem_base = rand_event_idx * 256 + batch * 16 + s;
                     mem_line = event_mem[mem_base];
 
                     for (int c = 0; c < 4; c++) begin
@@ -250,7 +250,7 @@ module tb_hilo_cnn_trigger;
                     // Waveform log (one row per ADC sample)
                     $fwrite(f_wave, "%0d %0d %0d %0d %0d %0d %0d %0d %0d\n",
                             cur_test_num, cur_event_idx, cur_label, $time,
-                            batch * 32 + s,
+                            batch * 16 + s,
                             adc_ch[0][s], adc_ch[1][s],
                             adc_ch[2][s], adc_ch[3][s]);
                 end

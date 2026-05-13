@@ -59,13 +59,13 @@ architecture rtl of CNN_CHUNK_CAPTURE is
     -- =========================================================================
     -- Types
     -- =========================================================================
-    -- One batch: 32 packed 64-bit samples
-    type batch_t is array(0 to 31) of std_logic_vector(63 downto 0);
-    -- Four-batch ring / post buffer
-    type ring_t  is array(0 to 3)  of batch_t;
+    -- One batch: 16 packed 64-bit samples
+    type batch_t is array(0 to 15) of std_logic_vector(63 downto 0);
+    -- Eight-batch ring / post buffer
+    type ring_t  is array(0 to 7)  of batch_t;
 
     -- =========================================================================
-    -- Ring buffer (4 most-recent pre-trigger batches, CLK_ADC domain)
+    -- Ring buffer (8 most-recent pre-trigger batches, CLK_ADC domain)
     -- Shifts on every DATA_STR pulse while in ADC_IDLE.
     -- Frozen (stops shifting) as soon as a trigger is accepted.
     -- =========================================================================
@@ -73,7 +73,7 @@ architecture rtl of CNN_CHUNK_CAPTURE is
 
     -- =========================================================================
     -- Post-trigger capture buffer (CLK_ADC domain)
-    -- Filled with 4 batches that follow the trigger.
+    -- Filled with 8 batches that follow the trigger.
     -- =========================================================================
     signal post_buf : ring_t := (others => (others => (others => '0')));
 
@@ -130,9 +130,9 @@ architecture rtl of CNN_CHUNK_CAPTURE is
     type adc_fsm_t is (ADC_IDLE, ADC_POST, ADC_WRITE);
     signal adc_state : adc_fsm_t := ADC_IDLE;
 
-    signal post_cnt  : integer range 0 to 3  := 0;  -- post batches captured
-    signal batch_cnt : integer range 0 to 7  := 0;  -- BRAM write: batch index
-    signal samp_cnt  : integer range 0 to 31 := 0;  -- BRAM write: sample index
+    signal post_cnt  : integer range 0 to 7  := 0;  -- post batches captured
+    signal batch_cnt : integer range 0 to 15 := 0;  -- BRAM write: batch index
+    signal samp_cnt  : integer range 0 to 15 := 0;  -- BRAM write: sample index
     signal write_sel : std_logic             := '0'; -- target ping-pong buffer
 
     -- =========================================================================
@@ -266,11 +266,15 @@ begin
                     -- ----------------------------------------------------------
                     when ADC_IDLE =>
                         if DATA_STR = '1' then
-                            -- Shift ring: [3]←[2]←[1]←[0]←current batch
+                            -- Shift ring: [7]←[6]←…←[0]←current batch
+                            ring_buf(7) <= ring_buf(6);
+                            ring_buf(6) <= ring_buf(5);
+                            ring_buf(5) <= ring_buf(4);
+                            ring_buf(4) <= ring_buf(3);
                             ring_buf(3) <= ring_buf(2);
                             ring_buf(2) <= ring_buf(1);
                             ring_buf(1) <= ring_buf(0);
-                            for s in 0 to 31 loop
+                            for s in 0 to 15 loop
                                 ring_buf(0)(s) <= pack_sample(ADC_DATA4, s);
                             end loop;
                         end if;
@@ -303,11 +307,11 @@ begin
                         end if;
 
                         if DATA_STR = '1' then
-                            for s in 0 to 31 loop
+                            for s in 0 to 15 loop
                                 post_buf(post_cnt)(s) <= pack_sample(ADC_DATA4, s);
                             end loop;
 
-                            if post_cnt = 3 then
+                            if post_cnt = 7 then
                                 batch_cnt <= 0;
                                 samp_cnt  <= 0;
                                 adc_state <= ADC_WRITE;
@@ -317,12 +321,12 @@ begin
                         end if;
 
                     -- ----------------------------------------------------------
-                    -- ADC_WRITE: stream 8 batches (256 words) into the selected
+                    -- ADC_WRITE: stream 16 batches (256 words) into the selected
                     -- BRAM buffer at full CLK_ADC rate (no throttle needed).
                     --
                     -- Write order (chronological, oldest first):
-                    --   batch 0-3 → ring_buf[3..0]  (128 pre-trigger samples)
-                    --   batch 4-7 → post_buf[0..3]  (128 post-trigger samples)
+                    --   batch 0-7  → ring_buf[7..0]  (128 pre-trigger samples)
+                    --   batch 8-15 → post_buf[0..7]  (128 post-trigger samples)
                     -- ----------------------------------------------------------
                     when ADC_WRITE =>
                         if L0_PRE_TRIG = '1' then
@@ -331,25 +335,25 @@ begin
 
                         wr_en <= '1';
 
-                        -- Address: {write_sel, batch_cnt[2:0], samp_cnt[4:0]}
+                        -- Address: {write_sel, batch_cnt[3:0], samp_cnt[3:0]}
                         if write_sel = '0' then
-                            wr_addr <= to_unsigned(batch_cnt * 32 + samp_cnt, 9);
+                            wr_addr <= to_unsigned(batch_cnt * 16 + samp_cnt, 9);
                         else
-                            wr_addr <= to_unsigned(256 + batch_cnt * 32 + samp_cnt, 9);
+                            wr_addr <= to_unsigned(256 + batch_cnt * 16 + samp_cnt, 9);
                         end if;
 
-                        -- Source: first 4 batches from ring (oldest→newest),
-                        --         next 4 from post capture.
-                        if batch_cnt < 4 then
-                            wr_data <= ring_buf(3 - batch_cnt)(samp_cnt);
+                        -- Source: first 8 batches from ring (oldest→newest),
+                        --         next 8 from post capture.
+                        if batch_cnt < 8 then
+                            wr_data <= ring_buf(7 - batch_cnt)(samp_cnt);
                         else
-                            wr_data <= post_buf(batch_cnt - 4)(samp_cnt);
+                            wr_data <= post_buf(batch_cnt - 8)(samp_cnt);
                         end if;
 
                         -- Advance sample then batch counters
-                        if samp_cnt = 31 then
+                        if samp_cnt = 15 then
                             samp_cnt <= 0;
-                            if batch_cnt = 7 then
+                            if batch_cnt = 15 then
                                 wr_en <= '0';
                                 -- Signal CNN domain: buffer is ready
                                 if write_sel = '0' then

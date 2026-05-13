@@ -11,7 +11,7 @@ A Hi-Lo Gated CNN Trigger for ARIANNA, a neutrino experiment. This is a submodul
 
 ```
 HILO_CNN_TRIGGER              hw/rtl/HILO_CNN_TRIGGER.vhd   (top-level, structural)
-├── PRE_TRIGGER               [dep: hilo-trigger v2.1.2]    — L0 bipolar pre-trigger
+├── PRE_TRIGGER               [dep: hilo-trigger v2.2.3]    — L0 bipolar pre-trigger
 │   ├── PRE_TRIGGER_1CH × 4
 │   └── MULT2BIN × 32
 ├── CNN_CHUNK_CAPTURE         hw/rtl/CNN_CHUNK_CAPTURE.vhd  — ring buffer + ping-pong + CDC
@@ -22,7 +22,7 @@ HILO_CNN_TRIGGER              hw/rtl/HILO_CNN_TRIGGER.vhd   (top-level, structur
 #### Data Flow
 
 ```
-ADC_DATA4  (4 ch × 32 samples × 12-bit, CLK_ADC domain)
+ADC_DATA4  (4 ch × 16 samples × 12-bit, CLK_ADC domain)
     │
     ├──► PRE_TRIGGER ─────────────────────────────────► L0_PRE_TRIG (out)
     │         bipolar threshold + coincidence window
@@ -31,8 +31,8 @@ ADC_DATA4  (4 ch × 32 samples × 12-bit, CLK_ADC domain)
     │                   │
     └──► CNN_CHUNK_CAPTURE
               │
-              │  CLK_ADC: Pre-trigger ring buffer (4 batches = 128 samples)
-              │           Post-trigger capture    (4 batches = 128 samples)
+              │  CLK_ADC: Pre-trigger ring buffer (8 batches = 128 samples)
+              │           Post-trigger capture    (8 batches = 128 samples)
               │           Total chunk: 256 samples → BRAM ping-pong
               │
               │  [True Dual-Port BRAM, 512 × 64-bit]
@@ -47,7 +47,7 @@ ADC_DATA4  (4 ch × 32 samples × 12-bit, CLK_ADC domain)
 
 | Clock    | Typical frequency | Responsibilities                                      |
 |----------|-------------------|-------------------------------------------------------|
-| `CLK_ADC`| 31.25 MHz         | ADC ingestion, Hi-Lo trigger, ring buffer, BRAM write |
+| `CLK_ADC`| 62.5 MHz          | ADC ingestion, Hi-Lo trigger, ring buffer, BRAM write |
 | `CLK_CNN`| 200 MHz           | CNN streaming (AXI-S), BRAM read, WRAPPER_TOP control |
 
 `RST` is shared (active-high, synchronous to `CLK_ADC`).
@@ -58,11 +58,11 @@ and drives the active-low `rst_n` that `WRAPPER_TOP` requires.
 
 | Region       | Batches | Samples | BRAM addresses |
 |--------------|---------|---------|----------------|
-| Pre-trigger  | 4       | 128     | 0 – 127        |
-| Post-trigger | 4       | 128     | 128 – 255      |
-| **Total**    | **8**   | **256** | **0 – 255**    |
+| Pre-trigger  | 8       | 128     | 0 – 127        |
+| Post-trigger | 8       | 128     | 128 – 255      |
+| **Total**    | **16**  | **256** | **0 – 255**    |
 
-Alignment is batch-granular (±31 samples): the triggering batch is the first
+Alignment is batch-granular (±15 samples): the triggering batch is the first
 post-trigger batch (addr 128). Signal events typically span tens of samples,
 so batch-level alignment is sufficient.
 
@@ -81,8 +81,8 @@ so batch-level alignment is sufficient.
 | `CLK_ADC`       | in  | 1     | —        | ADC batch clock                          |
 | `CLK_CNN`       | in  | 1     | —        | CNN inference clock                      |
 | `RST`           | in  | 1     | CLK_ADC  | Shared active-high synchronous reset     |
-| `DATA_STR`      | in  | 1     | CLK_ADC  | Data strobe — one pulse per 32-sample batch |
-| `ADC_DATA4`     | in  | 4×32×12 | CLK_ADC | ADC samples, `adc_data4_type`           |
+| `DATA_STR`      | in  | 1     | CLK_ADC  | Data strobe — one pulse per 16-sample batch |
+| `ADC_DATA4`     | in  | 4×16×12 | CLK_ADC | ADC samples, `adc_data4_type`           |
 | `THRESH`        | in  | 12    | static   | Absolute threshold (ADC counts)          |
 | `HILO_WINDOW`   | in  | 5     | static   | Hi-Lo coincidence window (≤ 16 samples)  |
 | `COINC_WINDOW`  | in  | 6     | static   | Channel coincidence smear (≤ 32 samples) |
@@ -119,8 +119,8 @@ slow-control status register for run-time monitoring.
 
 | State       | Action                                                                             |
 |-------------|------------------------------------------------------------------------------------|
-| `ADC_IDLE`  | Continuously overwrites a 4-slot ring buffer (each slot = one 32-sample batch). PRE_TRIGGER has a 2-cycle pipeline latency, so the triggering batch has already landed in `ring_buf[3]` when `L0_PRE_TRIG` rises. |
-| `ADC_POST`  | Captures the 4 batches following the trigger (128 post-trigger samples).           |
+| `ADC_IDLE`  | Continuously overwrites an 8-slot ring buffer (each slot = one 16-sample batch). PRE_TRIGGER has a 2-cycle pipeline latency, so the triggering batch has already landed in `ring_buf[7]` when `L0_PRE_TRIG` rises. |
+| `ADC_POST`  | Captures the 8 batches following the trigger (128 post-trigger samples).           |
 | `ADC_WRITE` | Writes all 256 words (ring + post) to the free BRAM buffer at full CLK_ADC rate. If both buffers are occupied, sets `CHUNK_OVERFLOW` sticky flag and returns to `ADC_IDLE` without writing. |
 
 **CNN FSM (CLK_CNN)**
@@ -263,7 +263,7 @@ Add `.xdc` constraint files manually (not managed by Bender).
 - **Updating the CNN model**: replace `models/hgq_config_*.keras` in the
   `cnn-core` repo, re-run `vitis_hls -f build_prj.tcl`, then bump the
   `cnn-core` version in `Bender.yml` and run `bender update`.
-- **Changing batch size**: `adc_data_type` (32 samples) is defined in the
+- **Changing batch size**: `adc_data_type` (16 samples, default in v2.2.3) is defined in the
   `hilo-trigger` package.  Changing the batch size requires a coordinated
   update of that dependency and all files in this repo.
 - **CHUNK_OVERFLOW**: non-zero overflow during a run indicates the CNN

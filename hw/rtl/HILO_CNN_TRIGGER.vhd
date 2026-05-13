@@ -15,7 +15,7 @@ use work.pre_trigger_pkg.all;
 --   3. WRAPPER_TOP       (cnn-core-wrapper) — HLS CNN inference core
 --
 -- Clock domains:
---   CLK_ADC : ADC batching clock  (31.25 MHz typical, 1 GHz / 32 samples)
+--   CLK_ADC : ADC batching clock  (62.5 MHz typical, 1 GHz / 16 samples)
 --   CLK_CNN : CNN inference clock (200 MHz typical)
 --
 -- For multi-antenna-pair systems, instantiate this module twice at a higher
@@ -31,7 +31,7 @@ entity HILO_CNN_TRIGGER is
 
         -- ADC data interface (CLK_ADC domain)
         DATA_STR       : in  std_logic;
-        ADC_DATA4      : in  adc_data4_type;       -- 4 ch × 32 samples × 12-bit
+        ADC_DATA4      : in  adc_data4_type;       -- 4 ch × 16 samples × 12-bit
 
         -- Hi-Lo trigger configuration (CLK_ADC domain, static during operation)
         THRESH         : in  std_logic_vector(11 downto 0);

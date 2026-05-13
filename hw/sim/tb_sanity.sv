@@ -72,15 +72,15 @@ module tb_sanity;
     reg  data_str;
 
     // ADC channels: adc_ch[channel][sample_in_batch]
-    reg [11:0] adc_ch [0:3][0:31];
+    reg [11:0] adc_ch [0:3][0:15];
 
-    // Flat 1536-bit vector: 4 ch × 32 samples × 12 bits (MSB-first, ch0 lowest)
-    wire [1535:0] adc_data4_flat;
+    // Flat 768-bit vector: 4 ch × 16 samples × 12 bits (MSB-first, ch0 lowest)
+    wire [767:0] adc_data4_flat;
     genvar gi, gj;
     generate
         for (gi = 0; gi < 4; gi++) begin : gen_ch
-            for (gj = 0; gj < 32; gj++) begin : gen_s
-                assign adc_data4_flat[1535 - (gi*32 + gj)*12 -: 12] = adc_ch[gi][gj];
+            for (gj = 0; gj < 16; gj++) begin : gen_s
+                assign adc_data4_flat[767 - (gi*16 + gj)*12 -: 12] = adc_ch[gi][gj];
             end
         end
     endgenerate
@@ -152,8 +152,8 @@ module tb_sanity;
         integer s;
         logic [63:0] word;
         begin
-            for (s = 0; s < 32; s++) begin
-                word = chunk_mem[ev_id][batch * 32 + s];
+            for (s = 0; s < 16; s++) begin
+                word = chunk_mem[ev_id][batch * 16 + s];
                 adc_ch[0][s] = extract_ch(word, 0);
                 adc_ch[1][s] = extract_ch(word, 1);
                 adc_ch[2][s] = extract_ch(word, 2);
@@ -166,7 +166,7 @@ module tb_sanity;
         integer s, ch;
         begin
             for (ch = 0; ch < 4; ch++)
-                for (s = 0; s < 32; s++)
+                for (s = 0; s < 16; s++)
                     adc_ch[ch][s] = 12'h000;
         end
     endtask
@@ -279,15 +279,15 @@ module tb_sanity;
                 @(posedge clk_adc);
             end
 
-            // --- Drive 8 event batches (L0 may fire DURING this loop) ---
+            // --- Drive 16 event batches (L0 may fire DURING this loop) ---
             ev_start_time_ns = $realtime;
 
-            for (b = 0; b < 8; b++) begin
+            for (b = 0; b < 16; b++) begin
                 @(negedge clk_adc);
                 drive_event_batch(ev, b);
-                for (s = 0; s < 32; s++)
+                for (s = 0; s < 16; s++)
                     $fwrite(f_wave, "%0d,%0d,%0d,%0d,%0d,%0d\n",
-                            ev, b*32+s,
+                            ev, b*16+s,
                             $signed(adc_ch[0][s]), $signed(adc_ch[1][s]),
                             $signed(adc_ch[2][s]), $signed(adc_ch[3][s]));
                 @(posedge clk_adc);

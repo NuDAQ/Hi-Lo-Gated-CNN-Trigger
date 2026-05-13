@@ -57,7 +57,7 @@ def load_labels_hex(path: pathlib.Path) -> np.ndarray:
 
 def load_hex_chunk(path: pathlib.Path) -> np.ndarray:
     """
-    Load 256-line hex file into a (256, 4) int16 array.
+    Load 256-line hex file into a (256, 4) int32 array.
     Each line: 64-bit word with [ch3][ch2][ch1][ch0], each 16-bit sign-extended.
     Lower 12 bits of each 16-bit slot = signed 12-bit ADC value.
     """

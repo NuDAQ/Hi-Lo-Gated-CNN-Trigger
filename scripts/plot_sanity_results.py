@@ -336,17 +336,17 @@ def main():
         cnn_score = float(row["cnn_score_float"])
         pass_flag = bool(int(row["pass"]))
 
-        # Convert L0 trigger time to sample index within the 256-sample event
+        # Convert L0 trigger time to sample index within the 128-sample event
         l0_sample = -1.0
         if l0_fired:
             ev_start_ns = float(row["ev_start_ns"])
             l0_time_ns  = float(row["l0_time_ns"])
-            # Each ADC clock (32 ns) processes 32 samples.
+            # Each ADC clock (32 ns) processes 16 samples.
             # L0 fires ~2 ADC cycles after the triggering batch (pipeline delay).
             adc_clk_ns  = 32.0   # ADC clock period in ns
             batch_elapsed = (l0_time_ns - ev_start_ns) / adc_clk_ns
             # Subtract pipeline delay (~2 cycles) and convert to samples
-            l0_sample = max(0.0, (batch_elapsed - 2.0) * 32.0)
+            l0_sample = max(0.0, (batch_elapsed - 2.0) * 16.0)
 
         # Python RTL emulation
         gate4, coinc4, mult, pre_trig = emulate_hilo(
