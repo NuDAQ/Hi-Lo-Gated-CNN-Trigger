@@ -11,6 +11,7 @@ A Hi-Lo Gated CNN Trigger for ARIANNA, a neutrino experiment. This is a submodul
 
 ```
 HILO_CNN_TRIGGER              hw/rtl/HILO_CNN_TRIGGER.vhd   (top-level, structural)
+├── ADC_STREAM_FIFO           hw/rtl/ADC_STREAM_FIFO.vhd    — elastic ADC batch FIFO
 ├── PRE_TRIGGER               [dep: hilo-trigger v2.2.4]    — L0 bipolar pre-trigger
 │   ├── PRE_TRIGGER_1CH × 4
 │   └── MULT2BIN × 32
@@ -23,6 +24,9 @@ HILO_CNN_TRIGGER              hw/rtl/HILO_CNN_TRIGGER.vhd   (top-level, structur
 
 ```
 ADC_DATA4  (4 ch × 16 samples × 12-bit, CLK_ADC domain)
+    │
+    ▼
+ADC_STREAM_FIFO   (FIFO_DEPTH-batch elastic buffer, CLK_ADC domain)
     │
     ├──► PRE_TRIGGER ─────────────────────────────────► L0_PRE_TRIG (out)
     │         bipolar threshold + coincidence window
@@ -77,6 +81,15 @@ so batch-level alignment is sufficient.
 
 #### Top-Level Port Interface (`HILO_CNN_TRIGGER`)
 
+**Generics**
+
+| Generic      | Default    | Description                                                                                      |
+|--------------|------------|--------------------------------------------------------------------------------------------------|
+| `CLK_ADC_HZ` | 62_500_000 | CLK_ADC frequency in Hz. Propagates to `CNN_CHUNK_CAPTURE` so the 50 µs rate-monitor window is correct at any CLK_ADC rate. |
+| `FIFO_DEPTH` | 8          | Depth of `ADC_STREAM_FIFO` in 16-sample batches. Absorbs rate mismatch when CLK_ADC runs faster than the ADC batch delivery rate. |
+
+**Ports**
+
 | Port            | Dir | Width | Clock    | Description                              |
 |-----------------|-----|-------|----------|------------------------------------------|
 | `CLK_ADC`       | in  | 1     | —        | ADC batch clock                          |
@@ -116,15 +129,17 @@ side reads from `rd_ptr` (also mod 12) in strict FIFO order.  With a CNN latency
 < 17 µs and a design goal of ≤ 1 trigger per 20 µs, the 12-slot depth absorbs
 Poisson bursts with ≈ 2σ headroom before blanking engages.
 
-**Rate-based L0 blanking** — A fixed-window rate monitor (50 µs, 3125 CLK_ADC
-cycles) counts *all* raw L0 pulses, including those that arrive while blanking
-is already active.  All threshold parameters are compile-time constants in
-`CNN_CHUNK_CAPTURE.vhd`:
+**Rate-based L0 blanking** — A fixed-window rate monitor (50 µs, `WINDOW_CYCLES`
+CLK_ADC cycles) counts *all* raw L0 pulses, including those that arrive while
+blanking is already active.  `WINDOW_CYCLES` is derived at elaboration time from
+the `CLK_ADC_HZ` generic (`CLK_ADC_HZ / 20_000`), so the window remains 50 µs
+regardless of the actual CLK_ADC frequency.  All other threshold parameters are
+compile-time constants in `CNN_CHUNK_CAPTURE.vhd`:
 
 | Constant        | Default | Meaning                                      |
 |-----------------|---------|----------------------------------------------|
 | `N_BUF`         | 12      | Circular queue depth                         |
-| `WINDOW_CYCLES` | 3125    | Rate-monitor window (50 µs @ 62.5 MHz)       |
+| `WINDOW_CYCLES` | `CLK_ADC_HZ / 20_000` | Rate-monitor window; always 50 µs — derived from `CLK_ADC_HZ` generic (default: 3125 cycles @ 62.5 MHz). |
 | `HI_THRESH`     | 10      | Enter blanking: ≥ 10 L0 per window (1/5 µs)  |
 | `LO_THRESH`     | 3       | Exit blanking:  ≤ 3  L0 per window (<1/15 µs)|
 
@@ -230,7 +245,7 @@ capture loop.
 
 ---
 
-### Sanity Test
+### <s>anity Test<s> (The current version does not support this feature)
 
 `scripts/run_sanity_sim.sh` runs a self-contained XSim batch simulation against
 3 signal and 1 noise events from the `cnn-core-wrapper` test dataset.
@@ -282,26 +297,6 @@ This checks hex file format, bipolar threshold crossings, Python Hi-Lo emulation
 waveform consistency between `sanity_wave.csv` and the source hex files, and
 prints a per-event summary of the simulation results.
 
-## Build Flow
-
-```bash
-# Step 1 — generate CNN RTL from the Keras model (once per model update)
-cd <cnn-core checkout>/cnn_core_project
-vitis_hls -f build_prj.tcl
-
-# Step 2 — fetch / update all Bender dependencies
-bender update
-
-# Step 3 — generate the Vivado source-file script
-bender script vivado > add_sources.tcl
-```
-
-Open Vivado from the **project root** (not a sub-directory), then:
-```tcl
-source add_sources.tcl
-```
-Add `.xdc` constraint files manually (not managed by Bender).
-
 ## Known Limitations
 
 1. **Capture window for high-amplitude sanity data.**
@@ -333,37 +328,6 @@ Add `.xdc` constraint files manually (not managed by Bender).
    collision between separate events.  Note: environmental noise bursts that
    would cause this are suppressed by the rate-based blanking mechanism before
    `CHUNK_OVERFLOW` has time to accumulate.
-
-## Developer Notes
-
-- **Updating the CNN model**: replace `models/hgq_config_*.keras` in the
-  `cnn-core` repo, re-run `vitis_hls -f build_prj.tcl`, then bump the
-  `cnn-core` version in `Bender.yml` and run `bender update`.
-- **Changing batch size**: `N_SAMPLES` (16 by default) is a package constant in
-  `hilo-trigger`. Changing it requires a coordinated update of that dependency
-  and all files in this repo that assume 16 samples per batch.
-- **CHUNK_OVERFLOW**: fires only outside blanking, when all 12 circular-queue
-  slots are occupied.  Under normal neutrino-signal rates (≪ 1/20 µs) this
-  should never fire.  If it does during physics running, reduce the trigger rate
-  (increase `BIN_THR` or widen `THRESH`) or increase `N_BUF`.
-  `L0_BLANKING` engaging is the normal response to noise bursts and does not
-  constitute an overflow.
-- **Mixed-language simulation**: `HILO_CNN_TRIGGER_TB_WRAP.vhd` bridges the
-  flat SV vector to `adc_data4_type`. Packing convention must match the
-  generate block in `tb_hilo_cnn_trigger.sv` — both use MSB-first, ch0 at
-  the low end.
-- **ap_ctrl_hs protocol (WRAPPER_TOP / cnn_core)**:
-  `CNN_START` must be held high until `CNN_READY` (ap_ready) rises. A
-  single-cycle pulse is not sufficient — the HLS core samples ap_start on the
-  ap_ready rising edge, not on the first assertion.
-  `CNN_IN_VALID` must be asserted on the same clock edge as `CNN_START`, with
-  the first input word already present on `CNN_IN_DATA`. Any bubble in the
-  input stream stalls the ap_fixed<12,6> datapath inside the HLS core and may
-  cause incorrect inference results.
-- **Diagnostic `report` statements**: `CNN_CHUNK_CAPTURE.vhd` contains
-  two concurrent `process` blocks that emit VHDL `report` messages on changes
-  to `CNN_IDLE` and `buf_written_cnn`. These should be removed before
-  synthesizing for hardware.
 
 ## License
 This project is licensed under the SHL-2.1 License. See the [LICENSE](LICENSE).
@@ -420,3 +384,48 @@ sources:
       - src/axi_sim_mem.sv
       - src/axi_test.sv
 ```
+## Developer Notes
+
+- **Updating the CNN model**: replace `models/hgq_config_*.keras` in the
+  `cnn-core` repo, re-run `vitis_hls -f build_prj.tcl`, then bump the
+  `cnn-core` version in `Bender.yml` and run `bender update`.
+- **Changing batch size**: `N_SAMPLES` (16 by default) is a package constant in
+  `hilo-trigger`. Changing it requires a coordinated update of that dependency
+  and all files in this repo that assume 16 samples per batch.
+- **CHUNK_OVERFLOW**: fires only outside blanking, when all 12 circular-queue
+  slots are occupied.  Under normal neutrino-signal rates (≪ 1/20 µs) this
+  should never fire.  If it does during physics running, reduce the trigger rate
+  (increase `BIN_THR` or widen `THRESH`) or increase `N_BUF`.
+  `L0_BLANKING` engaging is the normal response to noise bursts and does not
+  constitute an overflow.
+- **Mixed-language simulation**: `HILO_CNN_TRIGGER_TB_WRAP.vhd` bridges the
+  flat SV vector to `adc_data4_type`. Packing convention must match the
+  generate block in `tb_hilo_cnn_trigger.sv` — both use MSB-first, ch0 at
+  the low end.
+- **ap_ctrl_hs protocol (WRAPPER_TOP / cnn_core)**:
+  `CNN_START` must be held high until `CNN_READY` (ap_ready) rises. A
+  single-cycle pulse is not sufficient — the HLS core samples ap_start on the
+  ap_ready rising edge, not on the first assertion.
+  `CNN_IN_VALID` must be asserted on the same clock edge as `CNN_START`, with
+  the first input word already present on `CNN_IN_DATA`. Any bubble in the
+  input stream stalls the ap_fixed<12,6> datapath inside the HLS core and may
+  cause incorrect inference results.
+- **Diagnostic `report` statements**: `CNN_CHUNK_CAPTURE.vhd` contains
+  two concurrent `process` blocks that emit VHDL `report` messages on changes
+  to `CNN_IDLE` and `buf_written_cnn`. These should be removed before
+  synthesizing for hardware.
+- **CLK_ADC frequency**: Always set `CLK_ADC_HZ` in the `HILO_CNN_TRIGGER`
+  generic map to match the actual CLK_ADC frequency. The default (62_500_000)
+  is applied when no override is provided, including all existing simulation
+  scripts, which run at 62.5 MHz or 31.25 MHz. At 31.25 MHz the blanking window
+  becomes 100 µs instead of 50 µs; this is acceptable for simulation but should
+  be corrected for hardware deployment.
+- **ADC_STREAM_FIFO**: The elastic FIFO (`ADC_STREAM_FIFO.vhd`, depth
+  `FIFO_DEPTH` batches) is instantiated inside `HILO_CNN_TRIGGER` before both
+  `PRE_TRIGGER` and `CNN_CHUNK_CAPTURE`. When CLK_ADC equals the ADC batch rate
+  (nominal case), the FIFO acts as a one-cycle pipeline register with no
+  functional impact. When CLK_ADC is faster, the FIFO absorbs the rate mismatch
+  so that both downstream modules always receive a gapless batch stream.
+  `FIFO_DEPTH` need only be increased if sustained CLK_ADC-to-batch-rate ratios
+  exceed 8×, which is outside the intended operating range.
+  
