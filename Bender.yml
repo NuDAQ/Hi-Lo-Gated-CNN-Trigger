@@ -17,6 +17,7 @@ dependencies:
   hilo-trigger: { git: "git@github.com:NuDAQ/Hi-Lo-Trigger.git", version: "2.2.4" }
 
 sources:
+  - hw/rtl/ADC_STREAM_FIFO.vhd
   - hw/rtl/CNN_CHUNK_CAPTURE.vhd
   - hw/rtl/HILO_CNN_TRIGGER.vhd
 

@@ -22,6 +22,7 @@ Compiling package std.textio
 Compiling package ieee.std_logic_1164
 Compiling package ieee.numeric_std
 Compiling package xil_defaultlib.pre_trigger_pkg
+Compiling architecture rtl of entity xil_defaultlib.ADC_STREAM_FIFO [adc_stream_fifo_default]
 Compiling architecture behav of entity xil_defaultlib.PRE_TRIGGER_1CH [pre_trigger_1ch_default]
 Compiling architecture behav of entity xil_defaultlib.PRE_TRIGGER_1CH [\PRE_TRIGGER_1CH(ch=1)\]
 Compiling architecture behav of entity xil_defaultlib.PRE_TRIGGER_1CH [\PRE_TRIGGER_1CH(ch=2)\]

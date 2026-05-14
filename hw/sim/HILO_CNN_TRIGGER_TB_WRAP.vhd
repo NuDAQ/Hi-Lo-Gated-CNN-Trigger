@@ -16,6 +16,10 @@ use ieee.std_logic_1164.all;
 use work.pre_trigger_pkg.all;
 
 entity HILO_CNN_TRIGGER_TB_WRAP is
+    generic (
+        CLK_ADC_HZ : integer := 62_500_000;
+        FIFO_DEPTH : integer := 8
+    );
     port (
         CLK_ADC        : in  std_logic;
         CLK_CNN        : in  std_logic;
@@ -51,6 +55,10 @@ begin
     end generate gen_ch;
 
     u_dut : entity work.HILO_CNN_TRIGGER
+        generic map (
+            CLK_ADC_HZ => CLK_ADC_HZ,
+            FIFO_DEPTH => FIFO_DEPTH
+        )
         port map (
             CLK_ADC        => CLK_ADC,
             CLK_CNN        => CLK_CNN,

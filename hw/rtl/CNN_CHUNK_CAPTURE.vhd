@@ -39,6 +39,12 @@ use work.pre_trigger_pkg.all;
 -- ----------------------------------------------------------------------------
 
 entity CNN_CHUNK_CAPTURE is
+    generic (
+        -- CLK_ADC frequency in Hz, used to derive the rate-monitor window so
+        -- that the 50 µs blanking window stays calibrated regardless of the
+        -- actual CLK_ADC rate.  Default matches the nominal 62.5 MHz.
+        CLK_ADC_HZ : integer := 62_500_000
+    );
     port (
         -- CLK_ADC domain
         CLK_ADC      : in  std_logic;
@@ -70,7 +76,9 @@ architecture rtl of CNN_CHUNK_CAPTURE is
     -- Configurable parameters — edit these constants, no interface change needed
     -- =========================================================================
     constant N_BUF         : integer := 12;    -- circular queue depth (buffers)
-    constant WINDOW_CYCLES : integer := 3125;  -- rate-monitor window: 50 µs @ 62.5 MHz
+    -- Rate-monitor window: 50 µs, derived from CLK_ADC_HZ generic.
+    -- At 62.5 MHz → 3125 cycles; at 125 MHz → 6250 cycles; etc.
+    constant WINDOW_CYCLES : integer := CLK_ADC_HZ / 20_000;
     constant HI_THRESH     : integer := 10;    -- enter blanking: ≥10 L0/window (1 per 5 µs)
     constant LO_THRESH     : integer := 3;     -- exit  blanking: ≤3  L0/window (<1 per 15 µs)
 

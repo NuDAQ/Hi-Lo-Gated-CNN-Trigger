@@ -23,6 +23,18 @@ use work.pre_trigger_pkg.all;
 -- ----------------------------------------------------------------------------
 
 entity HILO_CNN_TRIGGER is
+    generic (
+        -- CLK_ADC frequency in Hz.  Used to:
+        --   1. Calibrate the 50 µs rate-monitor window in CNN_CHUNK_CAPTURE.
+        --   2. Size nothing else — only the blanking timer depends on it.
+        -- Default: 62.5 MHz (1 GHz ADC / 16 samples per batch).
+        CLK_ADC_HZ  : integer := 62_500_000;
+
+        -- Depth of the elastic ADC batch FIFO (number of 16-sample batches).
+        -- Absorbs rate mismatches when CLK_ADC > ADC batch delivery rate.
+        -- 8 batches = 128 samples of headroom, well above any jitter margin.
+        FIFO_DEPTH  : integer := 8
+    );
     port (
         CLK_ADC        : in  std_logic;
         CLK_CNN        : in  std_logic;
@@ -82,6 +94,10 @@ architecture structural of HILO_CNN_TRIGGER is
         );
     end component;
 
+    -- Buffered ADC signals from the elastic FIFO (CLK_ADC domain)
+    signal data_str_buf  : std_logic;
+    signal adc_data4_buf : adc_data4_type;
+
     signal pre_trig_int  : std_logic;
 
     -- CNN handshake (CLK_CNN domain)
@@ -99,12 +115,31 @@ begin
     L0_PRE_TRIG <= pre_trig_int;
 
     -- -------------------------------------------------------------------------
+    -- Elastic FIFO: absorbs rate mismatch when CLK_ADC > ADC batch rate.
+    -- All downstream logic uses data_str_buf / adc_data4_buf.
+    -- -------------------------------------------------------------------------
+    u_ADC_STREAM_FIFO : entity work.ADC_STREAM_FIFO
+        generic map (
+            DEPTH => FIFO_DEPTH
+        )
+        port map (
+            CLK_ADC      => CLK_ADC,
+            RST          => RST,
+            DATA_STR_IN  => DATA_STR,
+            ADC_DATA4_IN => ADC_DATA4,
+            DATA_STR_OUT => data_str_buf,
+            ADC_DATA4_OUT => adc_data4_buf,
+            OVERFLOW     => open,
+            EMPTY        => open
+        );
+
+    -- -------------------------------------------------------------------------
     u_PRE_TRIGGER : entity work.PRE_TRIGGER
         port map (
             CLK          => CLK_ADC,
             RESET        => RST,
-            DATA_STR     => DATA_STR,
-            ADC_DATA4    => ADC_DATA4,
+            DATA_STR     => data_str_buf,
+            ADC_DATA4    => adc_data4_buf,
             THRESH       => THRESH,
             HILO_WINDOW  => HILO_WINDOW,
             COINC_WINDOW => COINC_WINDOW,
@@ -114,11 +149,14 @@ begin
 
     -- -------------------------------------------------------------------------
     u_CNN_CHUNK_CAPTURE : entity work.CNN_CHUNK_CAPTURE
+        generic map (
+            CLK_ADC_HZ => CLK_ADC_HZ
+        )
         port map (
             CLK_ADC        => CLK_ADC,
             RST            => RST,
-            DATA_STR       => DATA_STR,
-            ADC_DATA4      => ADC_DATA4,
+            DATA_STR       => data_str_buf,
+            ADC_DATA4      => adc_data4_buf,
             L0_PRE_TRIG    => pre_trig_int,
             CLK_CNN        => CLK_CNN,
             RST_N_CNN      => rst_n_cnn,

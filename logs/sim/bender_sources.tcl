@@ -117,6 +117,7 @@ add_files -norecurse -fileset [current_fileset] [list \
 ]
 
 add_files -norecurse -fileset [current_fileset] [list \
+    $ROOT/hw/rtl/ADC_STREAM_FIFO.vhd \
     $ROOT/hw/rtl/CNN_CHUNK_CAPTURE.vhd \
     $ROOT/hw/rtl/HILO_CNN_TRIGGER.vhd \
 ]

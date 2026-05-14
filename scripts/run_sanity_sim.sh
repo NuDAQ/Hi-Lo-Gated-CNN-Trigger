@@ -230,10 +230,11 @@ fi
 # ── 4d. Our top-level VHDL design ──
 # Bender may have already compiled these; recompiling is harmless and guarantees
 # the latest version is in the library.
-echo "      xvhdl (top): CNN_CHUNK_CAPTURE, HILO_CNN_TRIGGER, TB_WRAP ..."
+echo "      xvhdl (top): ADC_STREAM_FIFO, CNN_CHUNK_CAPTURE, HILO_CNN_TRIGGER, TB_WRAP ..."
 xvhdl -2008 \
       -work "$WORK" \
       --log "${LOG_DIR}/xvhdl_top.log" \
+      hw/rtl/ADC_STREAM_FIFO.vhd \
       hw/rtl/CNN_CHUNK_CAPTURE.vhd \
       hw/rtl/HILO_CNN_TRIGGER.vhd \
       hw/sim/HILO_CNN_TRIGGER_TB_WRAP.vhd
