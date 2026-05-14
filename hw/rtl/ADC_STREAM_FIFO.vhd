@@ -8,21 +8,6 @@ use work.pre_trigger_pkg.all;
 
 -- ----------------------------------------------------------------------------
 -- ADC_STREAM_FIFO
---
--- Elastic batch FIFO inserted between the ADC interface and the trigger chain.
--- Decouples the ADC batch delivery rate from CLK_ADC: when CLK_ADC runs faster
--- than the ADC (DATA_STR does not assert every cycle), this FIFO absorbs bursts
--- and presents batches to the downstream at the natural pop rate (one batch per
--- CLK_ADC cycle while non-empty), so that PRE_TRIGGER and CNN_CHUNK_CAPTURE
--- always see a valid, gapless batch stream.
---
--- Push: DATA_STR_IN = '1' → one batch written. Dropped + OVERFLOW set if full.
--- Pop:  one batch per CLK_ADC cycle whenever the FIFO is non-empty.
--- Latency: 1 CLK_ADC cycle (first batch appears on DATA_STR_OUT the cycle after
---          the first DATA_STR_IN pulse when the FIFO was empty).
---
--- Flat-vector packing convention (matches HILO_CNN_TRIGGER_TB_WRAP):
---   flat[767 - (ch*16+s)*12 -: 12]  ↔  adc_data4_type(ch)(s)
 -- ----------------------------------------------------------------------------
 
 entity ADC_STREAM_FIFO is
@@ -58,10 +43,6 @@ architecture rtl of ADC_STREAM_FIFO is
     signal rd_ptr : integer range 0 to DEPTH-1 := 0;
     signal count  : integer range 0 to DEPTH   := 0;
 
-    -- -------------------------------------------------------------------------
-    -- Pack / unpack helpers
-    -- Convention: flat[767 - (ch*16+s)*12 downto 756 - (ch*16+s)*12] = d(ch)(s)
-    -- -------------------------------------------------------------------------
     function pack_adc(d : adc_data4_type) return std_logic_vector is
         variable flat : std_logic_vector(WORD_W-1 downto 0);
     begin

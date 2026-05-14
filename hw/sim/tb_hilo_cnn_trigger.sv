@@ -1,26 +1,13 @@
 `timescale 1ns / 10ps
 
 // =============================================================================
+// Copyright 2026 Albert L. Cheung @ University of California, Irvine
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+//
 // tb_hilo_cnn_trigger.sv
 //
 // SystemVerilog testbench for HILO_CNN_TRIGGER (via the mixed-language wrapper
 // HILO_CNN_TRIGGER_TB_WRAP).
-//
-// Clock parameters:
-//   CLK_ADC : 31.25 MHz  (32 ns period) — 1 GHz ADC / 32 samples per batch
-//   CLK_CNN : 200  MHz  ( 5 ns period)
-//
-// ADC interface: 4 channels × 16 samples × 12-bit (two's complement)
-// Flat vector   : 4 × 16 × 12 = 768 bits, MSB-first packing
-//   flat[767 - (ch*16+s)*12 -: 12] ↔ adc_data4_type(ch)(s)
-//
-// Test strategy:
-//   Background: algorithmic Gaussian noise, amplitude ~σ (always below THRESH)
-//   Injection:  20 test events — even indices inject a guaranteed signal event
-//               (read from pre-computed hex files), odd indices inject random.
-//               Signal is superimposed on the background noise baseline.
-//   Logging:    three text files (waveforms, L0 triggers, CNN results)
-//               readable by ROOT analysis scripts.
 // =============================================================================
 
 module tb_hilo_cnn_trigger;
@@ -48,8 +35,6 @@ module tb_hilo_cnn_trigger;
     // Per-channel, per-sample ADC values (12-bit two's complement)
     reg [11:0] adc_ch [0:3][0:15];
 
-    // Flat packed vector for the VHDL wrapper port
-    // Packing: flat[767 - (ch*16+s)*12 -: 12] = adc_ch[ch][s]
     wire [767:0] adc_data4_flat;
     genvar gi, gj;
     generate
@@ -66,9 +51,6 @@ module tb_hilo_cnn_trigger;
     reg         cnn_out_ready;
     wire        chunk_overflow;
 
-    // -------------------------------------------------------------------------
-    // Simulation logging
-    // -------------------------------------------------------------------------
     integer f_wave, f_trig, f_cnn;
     integer cur_test_num  = -1;
     integer cur_event_idx = -1;
@@ -78,9 +60,6 @@ module tb_hilo_cnn_trigger;
     integer overflow_cnt = 0;
     always @(posedge chunk_overflow) overflow_cnt++;
 
-    // -------------------------------------------------------------------------
-    // Event memory (1000 events × 256 timesteps × 4 ch × 12-bit = 48-bit line)
-    // -------------------------------------------------------------------------
     reg [47:0] event_mem [0:255999];   // 1000 events × 256 timesteps
     reg [31:0] label_mem [0:999];
 
@@ -102,9 +81,6 @@ module tb_hilo_cnn_trigger;
         $display("[%0t] Pre-scan: %0d signal events found.", $time, n_sigs);
     end
 
-    // -------------------------------------------------------------------------
-    // DUT instantiation
-    // -------------------------------------------------------------------------
     HILO_CNN_TRIGGER_TB_WRAP uut (
         .CLK_ADC        (clk_adc),
         .CLK_CNN        (clk_cnn),
@@ -122,14 +98,9 @@ module tb_hilo_cnn_trigger;
         .CHUNK_OVERFLOW (chunk_overflow)
     );
 
-    // Clocks
     always #(ADC_CLK_PERIOD / 2.0) clk_adc = ~clk_adc;
     always #(CNN_CLK_PERIOD / 2.0) clk_cnn = ~clk_cnn;
 
-    // -------------------------------------------------------------------------
-    // Background noise driver (runs when not injecting an event)
-    // Amplitude stays below THRESH to prevent false triggers.
-    // -------------------------------------------------------------------------
     reg injecting_event = 0;
 
     always @(posedge clk_adc) begin
@@ -143,18 +114,12 @@ module tb_hilo_cnn_trigger;
         end
     end
 
-    // -------------------------------------------------------------------------
-    // L0 trigger logging
-    // -------------------------------------------------------------------------
     always @(posedge l0_pre_trig) begin
         $fwrite(f_trig, "%0d %0d %0d %0d\n",
                 $time, cur_test_num, cur_event_idx, cur_label);
         $fflush(f_trig);
     end
 
-    // -------------------------------------------------------------------------
-    // CNN output logging
-    // -------------------------------------------------------------------------
     always @(posedge clk_cnn) begin
         if (cnn_out_valid && cnn_out_ready) begin
             $fwrite(f_cnn, "%0d %0d %0d %0d %0d\n",
@@ -164,9 +129,6 @@ module tb_hilo_cnn_trigger;
         end
     end
 
-    // -------------------------------------------------------------------------
-    // Main stimulus
-    // -------------------------------------------------------------------------
     initial begin
         $display("[%0t] HILO_CNN_TRIGGER testbench starting.", $time);
 
@@ -194,10 +156,6 @@ module tb_hilo_cnn_trigger;
         data_str = 1;
         repeat(200) @(posedge clk_adc);   // let ring buffer fill
 
-        // -----------------------------------------------------------------
-        // Dynamic injection loop: 20 test events.
-        // Even test indices → guaranteed signal; odd → random pick.
-        // -----------------------------------------------------------------
         for (int test_ev = 0; test_ev < 20; test_ev++) begin
             automatic integer delay_cycles;
             automatic integer rand_event_idx;
@@ -220,10 +178,8 @@ module tb_hilo_cnn_trigger;
             cur_event_idx = rand_event_idx;
             cur_label     = label_mem[rand_event_idx];
 
-            $display("===================================================");
             $display("[%0t] INJECT event #%0d  label=%0d",
                      $time, rand_event_idx, cur_label);
-            $display("===================================================");
 
             // 3. Inject: 16 batches × 16 samples = 256 timesteps
             injecting_event = 1;
