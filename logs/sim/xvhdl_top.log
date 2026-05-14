@@ -1,3 +1,5 @@
+INFO: [VRFC 10-163] Analyzing VHDL file "/home/work1/Works/HiLoGatedCNNTrigger/hw/rtl/ADC_STREAM_FIFO.vhd" into library xil_defaultlib
+INFO: [VRFC 10-3107] analyzing entity 'ADC_STREAM_FIFO'
 INFO: [VRFC 10-163] Analyzing VHDL file "/home/work1/Works/HiLoGatedCNNTrigger/hw/rtl/CNN_CHUNK_CAPTURE.vhd" into library xil_defaultlib
 INFO: [VRFC 10-3107] analyzing entity 'CNN_CHUNK_CAPTURE'
 INFO: [VRFC 10-163] Analyzing VHDL file "/home/work1/Works/HiLoGatedCNNTrigger/hw/rtl/HILO_CNN_TRIGGER.vhd" into library xil_defaultlib
