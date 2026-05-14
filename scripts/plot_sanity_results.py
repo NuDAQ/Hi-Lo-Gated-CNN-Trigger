@@ -336,17 +336,18 @@ def main():
         cnn_score = float(row["cnn_score_float"])
         pass_flag = bool(int(row["pass"]))
 
-        # Convert L0 trigger time to sample index within the 128-sample event
+        # Convert L0 trigger time to sample index within the 256-sample event chunk.
+        # Pipeline: ADC_STREAM_FIFO(1 cycle) + PRE_TRIGGER_1CH(1 cycle) +
+        #           coinc_proc/data_str_d(1 cycle) = 3 total batch cycles from
+        #           testbench input to L0 assertion sampled by CNN_CHUNK_CAPTURE.
         l0_sample = -1.0
         if l0_fired:
             ev_start_ns = float(row["ev_start_ns"])
             l0_time_ns  = float(row["l0_time_ns"])
-            # Each ADC clock (32 ns) processes 16 samples.
-            # L0 fires ~2 ADC cycles after the triggering batch (pipeline delay).
-            adc_clk_ns  = 32.0   # ADC clock period in ns
+            adc_clk_ns  = 32.0   # ADC clock period in ns (31.25 MHz)
             batch_elapsed = (l0_time_ns - ev_start_ns) / adc_clk_ns
-            # Subtract pipeline delay (~2 cycles) and convert to samples
-            l0_sample = max(0.0, (batch_elapsed - 2.0) * 16.0)
+            # Subtract 3-cycle total pipeline delay; multiply by 16 samples/batch
+            l0_sample = max(0.0, (batch_elapsed - 3.0) * 16.0)
 
         # Python RTL emulation
         gate4, coinc4, mult, pre_trig = emulate_hilo(

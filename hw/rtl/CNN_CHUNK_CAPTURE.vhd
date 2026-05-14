@@ -82,17 +82,28 @@ architecture rtl of CNN_CHUNK_CAPTURE is
     constant HI_THRESH     : integer := 10;    -- enter blanking: ≥10 L0/window (1 per 5 µs)
     constant LO_THRESH     : integer := 3;     -- exit  blanking: ≤3  L0/window (<1 per 15 µs)
 
+    -- Pipeline latency (batch cycles) from data_str_buf to L0_PRE_TRIG being
+    -- sampled by this module: ADC_STREAM_FIFO(1) + PRE_TRIGGER(2) = 3 total,
+    -- but only the PRE_TRIGGER portion (2) affects ring_buf offset because both
+    -- this module and PRE_TRIGGER share the same data_str_buf stream.
+    -- When L0 fires, ring_buf[0..PRE_TRIG_LATENCY-1] already contain
+    -- post-trigger data; the true trigger batch is at ring_buf[PRE_TRIG_LATENCY].
+    constant PRE_TRIG_LATENCY : integer := 2;
+
     -- =========================================================================
     -- Types
     -- =========================================================================
     type batch_t is array(0 to 15) of std_logic_vector(63 downto 0);
-    type ring_t  is array(0 to 7)  of batch_t;
+    -- ring_buf: 8 pre-trigger batches + PRE_TRIG_LATENCY pipeline-delay batches
+    type ring_t  is array(0 to 7 + PRE_TRIG_LATENCY) of batch_t;  -- depth 10
+    -- post_buf: 8 post-trigger batches minus the PRE_TRIG_LATENCY already in ring_buf
+    type post_t  is array(0 to 7 - PRE_TRIG_LATENCY) of batch_t;  -- depth 6
 
     -- =========================================================================
     -- Pre/post sample buffers (CLK_ADC domain)
     -- =========================================================================
     signal ring_buf : ring_t := (others => (others => (others => '0')));
-    signal post_buf : ring_t := (others => (others => (others => '0')));
+    signal post_buf : post_t := (others => (others => (others => '0')));
 
     -- =========================================================================
     -- Circular-queue BRAM: N_BUF*256 × 64-bit
@@ -148,7 +159,7 @@ architecture rtl of CNN_CHUNK_CAPTURE is
     type adc_fsm_t is (ADC_IDLE, ADC_POST, ADC_WRITE);
     signal adc_state : adc_fsm_t := ADC_IDLE;
 
-    signal post_cnt  : integer range 0 to 7  := 0;
+    signal post_cnt  : integer range 0 to 7 - PRE_TRIG_LATENCY := 0;
     signal batch_cnt : integer range 0 to 15 := 0;
     signal samp_cnt  : integer range 0 to 15 := 0;
     signal wr_ptr    : integer range 0 to N_BUF-1 := 0;
@@ -334,6 +345,8 @@ begin
                     -- ----------------------------------------------------------
                     when ADC_IDLE =>
                         if DATA_STR = '1' then
+                            ring_buf(9) <= ring_buf(8);
+                            ring_buf(8) <= ring_buf(7);
                             ring_buf(7) <= ring_buf(6);
                             ring_buf(6) <= ring_buf(5);
                             ring_buf(5) <= ring_buf(4);
@@ -371,7 +384,7 @@ begin
                                 post_buf(post_cnt)(s) <= pack_sample(ADC_DATA4, s);
                             end loop;
 
-                            if post_cnt = 7 then
+                            if post_cnt = 7 - PRE_TRIG_LATENCY then
                                 batch_cnt <= 0;
                                 samp_cnt  <= 0;
                                 adc_state <= ADC_WRITE;
@@ -384,9 +397,15 @@ begin
                     -- ADC_WRITE: stream 16 batches (256 words) into BRAM buffer
                     -- wr_ptr at full CLK_ADC rate.
                     --
-                    -- Write order (oldest sample first):
-                    --   batch 0-7  → ring_buf[7..0]  (128 pre-trigger samples)
-                    --   batch 8-15 → post_buf[0..7]  (128 post-trigger samples)
+                    -- Write order (oldest sample first), accounting for the
+                    -- PRE_TRIG_LATENCY pipeline-delay batches already in ring_buf:
+                    --   batch 0-7  → ring_buf[9..2]  (128 true pre-trigger samples;
+                    --                                  ring_buf[2] = trigger batch)
+                    --   batch 8-9  → ring_buf[1..0]  (32 early post-trigger samples
+                    --                                  consumed by pipeline delay)
+                    --   batch 10-15 → post_buf[0..5] (96 late post-trigger samples)
+                    --
+                    -- Result: trigger batch lands at chunk samples 112-127 (~centre).
                     -- ----------------------------------------------------------
                     when ADC_WRITE =>
                         wr_en <= '1';
@@ -394,10 +413,12 @@ begin
                         wr_addr <= to_unsigned(
                             wr_ptr * 256 + batch_cnt * 16 + samp_cnt, 12);
 
-                        if batch_cnt < 8 then
-                            wr_data <= ring_buf(7 - batch_cnt)(samp_cnt);
+                        if batch_cnt < 8 + PRE_TRIG_LATENCY then
+                            -- Pre-trigger + pipeline-delay entries from ring_buf.
+                            -- Index counts down from deepest (oldest) to newest.
+                            wr_data <= ring_buf(7 + PRE_TRIG_LATENCY - batch_cnt)(samp_cnt);
                         else
-                            wr_data <= post_buf(batch_cnt - 8)(samp_cnt);
+                            wr_data <= post_buf(batch_cnt - 8 - PRE_TRIG_LATENCY)(samp_cnt);
                         end if;
 
                         if samp_cnt = 15 then

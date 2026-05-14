@@ -51,8 +51,9 @@ module tb_sanity;
     parameter logic [ 3:0] P_BIN_THR      = 4'd1;     // single-channel, easiest
 
     // Number of dummy (zero) batches to feed before each event chunk.
-    // This primes the 4-batch ring buffer inside CNN_CHUNK_CAPTURE.
-    parameter int N_PRIME = 6;
+    // Must be ≥ ring_buf depth (10 = 8 pre-trigger + 2 pipeline-delay entries)
+    // so the ring buffer is fully primed before event data arrives.
+    parameter int N_PRIME = 10;
 
     // Per-event timeout (ns).  CNN inference typically takes ~25 µs.
     parameter real TIMEOUT_NS = 600_000.0;   // 600 µs
