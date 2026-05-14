@@ -109,7 +109,7 @@ Compiling module xil_defaultlib.WRAPPER_TOP(INPUT_WIDTH=64,OUTPU...
 Compiling architecture structural of entity xil_defaultlib.HILO_CNN_TRIGGER [hilo_cnn_trigger_default]
 Compiling architecture rtl of entity xil_defaultlib.HILO_CNN_TRIGGER_TB_WRAP [hilo_cnn_trigger_tb_wrap_default]
 Compiling module xil_defaultlib.tb_thermal(P_THRESH=12'b01100001...
-WARNING: [XSIM 43-3373] "/home/work1/Works/HiLoGatedCNNTrigger/hw/sim/tb_thermal.sv" Line 216. System function $fscanf is used as system task. This system function should have a LHS e.g. x=$fscanf().
-WARNING: [XSIM 43-3373] "/home/work1/Works/HiLoGatedCNNTrigger/hw/sim/tb_thermal.sv" Line 255. System function $fscanf is used as system task. This system function should have a LHS e.g. x=$fscanf().
-WARNING: [XSIM 43-3373] "/home/work1/Works/HiLoGatedCNNTrigger/hw/sim/tb_thermal.sv" Line 282. System function $fscanf is used as system task. This system function should have a LHS e.g. x=$fscanf().
+WARNING: [XSIM 43-3373] "/home/work1/Works/HiLoGatedCNNTrigger/hw/sim/tb_thermal.sv" Line 235. System function $fscanf is used as system task. This system function should have a LHS e.g. x=$fscanf().
+WARNING: [XSIM 43-3373] "/home/work1/Works/HiLoGatedCNNTrigger/hw/sim/tb_thermal.sv" Line 275. System function $fscanf is used as system task. This system function should have a LHS e.g. x=$fscanf().
+WARNING: [XSIM 43-3373] "/home/work1/Works/HiLoGatedCNNTrigger/hw/sim/tb_thermal.sv" Line 302. System function $fscanf is used as system task. This system function should have a LHS e.g. x=$fscanf().
 Built simulation snapshot tb_thermal_snapshot

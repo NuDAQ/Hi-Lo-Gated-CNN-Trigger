@@ -3,13 +3,13 @@
 # SW Build 4029153 on Fri Oct 13 20:13:54 MDT 2023
 # IP Build 4028589 on Sat Oct 14 00:45:43 MDT 2023
 # SharedData Build 4025554 on Tue Oct 10 17:18:54 MDT 2023
-# Start of session at: Wed May 13 23:56:04 2026
-# Process ID: 130174
+# Start of session at: Wed May 13 23:11:59 2026
+# Process ID: 126105
 # Current directory: /home/work1/Works/HiLoGatedCNNTrigger
 # Command line: xsim -log /home/work1/Works/HiLoGatedCNNTrigger/logs/sim/xsim_thermal.log -mode tcl -source {xsim.dir/tb_thermal_snapshot/xsim_script.tcl}
 # Log file: /home/work1/Works/HiLoGatedCNNTrigger/logs/sim/xsim_thermal.log
 # Journal file: /home/work1/Works/HiLoGatedCNNTrigger/xsim.jou
-# Running On: AlbertsUbuntu, OS: Linux, CPU Frequency: 800.000 MHz, CPU Physical cores: 24, Host memory: 16441 MB
+# Running On: AlbertsUbuntu, OS: Linux, CPU Frequency: 800.314 MHz, CPU Physical cores: 24, Host memory: 16441 MB
 #-----------------------------------------------------------
 source xsim.dir/tb_thermal_snapshot/xsim_script.tcl
 # xsim {tb_thermal_snapshot} -autoloadwcfg -runall
@@ -26,7 +26,7 @@ Time: 0 ps  Iteration: 2  Process: /tb_thermal(P_THRESH=12'b011000011)/uut/u_dut
 Note: [CNN_CHUNK] CNN_IDLE = '1'
 Time: 2500 ps  Iteration: 3  Process: /tb_thermal(P_THRESH=12'b011000011)/uut/u_dut/u_CNN_CHUNK_CAPTURE/line__452  File: /home/work1/Works/HiLoGatedCNNTrigger/hw/rtl/CNN_CHUNK_CAPTURE.vhd
 [200000] Reset released. Streaming thermal noise stimulus.
-  THRESH=195  HILO_WIN=5  COINC_WIN=30  BIN_THR=2  CNN_THRESH=128 (score>0.5000)
+  THRESH=195  HILO_WIN=5  COINC_WIN=30  BIN_THR=2
 
 === [29016000] L0_PRE_TRIG — chunk 0 / 3 ===
 Note: [CNN_CHUNK] buf_written_cnn = '1''0'
@@ -67,6 +67,6 @@ Time: 160032500 ps  Iteration: 1  Process: /tb_thermal(P_THRESH=12'b011000011)/u
 [162478000] Thermal sim complete.
   Chunks captured : 3 / 3
   CHUNK_OVERFLOW  : 0
-$finish called at time : 162477500 ps : File "/home/work1/Works/HiLoGatedCNNTrigger/hw/sim/tb_thermal.sv" Line 410
+$finish called at time : 162477500 ps : File "/home/work1/Works/HiLoGatedCNNTrigger/hw/sim/tb_thermal.sv" Line 389
 exit
-INFO: [Common 17-206] Exiting xsim at Wed May 13 23:56:08 2026...
+INFO: [Common 17-206] Exiting xsim at Wed May 13 23:12:03 2026...
