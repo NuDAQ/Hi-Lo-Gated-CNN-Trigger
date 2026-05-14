@@ -228,6 +228,29 @@ module tb_thermal;
                 cnn_cap_data  = 0;
 
                 // ----------------------------------------------------------
+                // Alignment cycle: PRE_TRIG is combinational and settles in
+                // a VHDL delta cycle AFTER the posedge where the SV testbench
+                // reads it.  The VHDL ADC_FSM therefore sees L0_PRE_TRIG='1'
+                // one CLK_ADC cycle later than the testbench does.
+                // Drive one extra batch (still pre-trigger from hardware's
+                // perspective: ADC_IDLE shifts ring one more time, then
+                // transitions to ADC_POST at this posedge).
+                // ----------------------------------------------------------
+                if (!$feof(stim_fd)) begin
+                    for (c = 0; c < 4; c++)
+                        for (s = 0; s < 16; s++)
+                            void'($fscanf(stim_fd, "%d", adc_ch[c][s]));
+                    for (slot = 7; slot > 0; slot--)
+                        for (c = 0; c < 4; c++)
+                            for (s = 0; s < 16; s++)
+                                ring_sv[slot][c][s] = ring_sv[slot-1][c][s];
+                    for (c = 0; c < 4; c++)
+                        for (s = 0; s < 16; s++)
+                            ring_sv[0][c][s] = adc_ch[c][s];
+                end
+                @(posedge clk_adc);  // hardware: ADC_IDLE→ADC_POST at this edge
+
+                // ----------------------------------------------------------
                 // Capture 8 post-trigger batches.
                 // The hardware CNN_CHUNK_CAPTURE FSM is now in ADC_POST,
                 // waiting for 8 DATA_STR pulses.
