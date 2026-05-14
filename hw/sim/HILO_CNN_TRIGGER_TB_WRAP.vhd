@@ -1,14 +1,9 @@
+-- Copyright 2026 Albert L. Cheung @ University of California, Irvine
+-- SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+
 -- =============================================================================
 -- HILO_CNN_TRIGGER_TB_WRAP.vhd
 -- Simulation-only mixed-language bridge for tb_hilo_cnn_trigger.sv.
---
--- Vivado xsim cannot bind a SystemVerilog port directly to a VHDL
--- user-defined composite type (adc_data4_type).  This wrapper accepts a
--- flat std_logic_vector and unpacks it into the composite type.
---
--- Flat-vector packing convention (must match the SV generate block):
---   adc_flat[767 - (ch*16 + s)*12  -: 12]  ↔  adc_data4_type(ch)(s)
---   Total width: 4 channels × 16 samples × 12 bits = 768 bits
 -- =============================================================================
 
 library ieee;
@@ -45,9 +40,6 @@ architecture rtl of HILO_CNN_TRIGGER_TB_WRAP is
     signal adc_internal : adc_data4_type;
 begin
 
-    -- Unpack flat vector → 2-D array.
-    -- Outer (ch): 0 to 3 — high-channel bits first in the flat vector.
-    -- Inner (s):  0 to 31 — high-sample bits first within each channel.
     gen_ch : for ch in 0 to 3 generate
         gen_s : for s in 0 to 15 generate
             adc_internal(ch)(s) <=

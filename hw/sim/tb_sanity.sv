@@ -1,32 +1,9 @@
 `timescale 1ns / 10ps
 
 // =============================================================================
-// tb_sanity.sv — Functional sanity-check for HILO_CNN_TRIGGER
-//
-// Tests 4 pre-computed chunks (3 signal, 1 noise) and verifies:
-//   Signal: L0_PRE_TRIG must fire  AND  CNN score > 0.5
-//   Noise:  L0_PRE_TRIG must NOT fire
-//
-// Data files:  hw/sim/sanity_data/chunk_sig{0,1,2}.hex
-//              hw/sim/sanity_data/chunk_noise0.hex
-//   Each file: 256 lines of 64-bit hex.
-//   Line k represents timestep k.
-//   Bit layout: [ch3(16)] [ch2(16)] [ch1(16)] [ch0(16)]
-//   Lower 12 bits of each 16-bit slot = signed 12-bit ADC value.
-//
-// Output files (for plot_sanity_results.py):
-//   hw/sim/sanity_data/sanity_wave.csv    — ADC waveforms (256 samples / event)
-//   hw/sim/sanity_data/sanity_results.txt — per-event trigger / CNN result
-//
-// Clocks:
-//   CLK_ADC = 31.25 MHz (32 ns period)  — ADC batch processing
-//   CLK_CNN = 200   MHz ( 5 ns period)  — CNN inference
-//
-// Before the event data, N_PRIME dummy batches (all zeros) are fed to prime
-// the ring buffer. After N_PRIME + 8 batches per event the testbench waits
-// for CNN completion (or TIMEOUT_US).
-//
-// Run via scripts/run_sanity_sim.sh (generates sanity_paths.svh first).
+// Copyright 2026 Albert L. Cheung @ University of California, Irvine
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+
 // =============================================================================
 
 // Absolute paths are injected by the shell script into:
@@ -38,34 +15,20 @@
 
 module tb_sanity;
 
-    // -------------------------------------------------------------------------
-    // Parameters — override via +define+ on the simulator command line
-    // -------------------------------------------------------------------------
     parameter real ADC_CLK_PERIOD = 32.0;    // ns  (31.25 MHz)
     parameter real CNN_CLK_PERIOD =  5.0;    // ns  (200   MHz)
 
-    // Hi-Lo trigger configuration (must match prepare_sanity_chunks.py --thresh)
     parameter logic [11:0] P_THRESH       = 12'd300;  // ADC counts (~4.7σ)
     parameter logic [ 4:0] P_HILO_WINDOW  = 5'd10;
     parameter logic [ 5:0] P_COINC_WINDOW = 6'd20;
     parameter logic [ 3:0] P_BIN_THR      = 4'd1;     // single-channel, easiest
 
-    // CNN inference threshold: score = $signed(CNN_OUT_DATA[16:0]) / 256.0
-    // L1 fires when score > P_CNN_THRESH / 256.0  (e.g. 128 → threshold 0.5)
     parameter logic signed [16:0] P_CNN_THRESH = 17'sd128;
 
-    // Number of dummy (zero) batches to feed before each event chunk.
-    // Must be ≥ ring_buf depth (10 = 8 pre-trigger + 2 pipeline-delay entries)
-    // so the ring buffer is fully primed before event data arrives.
     parameter int N_PRIME = 10;
 
-    // Per-event timeout (ns).  CNN inference typically takes ~25 µs.
     parameter real TIMEOUT_NS = 600_000.0;   // 600 µs
 
-    // CNN decision threshold: score = $signed(output_data[16:0]) / 256.0
-    // Signal   pass: score > +0.5  →  raw integer > +128
-    // Noise    pass: score ≤ +0.5  →  raw integer ≤ +128
-    // (ARIANNA thermal noise can trigger Hi-Lo; the CNN is the discriminator)
     parameter int CNN_SCORE_THRESH = 128;
 
     // -------------------------------------------------------------------------
@@ -79,7 +42,6 @@ module tb_sanity;
     // ADC channels: adc_ch[channel][sample_in_batch]
     reg [11:0] adc_ch [0:3][0:15];
 
-    // Flat 768-bit vector: 4 ch × 16 samples × 12 bits (MSB-first, ch0 lowest)
     wire [767:0] adc_data4_flat;
     genvar gi, gj;
     generate
@@ -97,9 +59,6 @@ module tb_sanity;
     wire        l1_cnn_trig;
     wire        chunk_overflow;
 
-    // -------------------------------------------------------------------------
-    // DUT — mixed-language bridge to HILO_CNN_TRIGGER (VHDL)
-    // -------------------------------------------------------------------------
     HILO_CNN_TRIGGER_TB_WRAP uut (
         .CLK_ADC        (clk_adc),
         .CLK_CNN        (clk_cnn),
@@ -125,20 +84,10 @@ module tb_sanity;
     always #(ADC_CLK_PERIOD / 2.0) clk_adc = ~clk_adc;
     always #(CNN_CLK_PERIOD / 2.0) clk_cnn = ~clk_cnn;
 
-    // -------------------------------------------------------------------------
-    // Chunk memory: 4 events × 256 timesteps × 64-bit
-    // -------------------------------------------------------------------------
     logic [63:0] chunk_mem [0:3][0:255];
 
-    // -------------------------------------------------------------------------
-    // Log file handles
-    // -------------------------------------------------------------------------
     integer f_wave, f_results;
 
-    // -------------------------------------------------------------------------
-    // Helper: extract signed 12-bit ADC value for channel 'ch' from 64-bit word
-    // Bit layout: ch0=[11:0], ch1=[27:16], ch2=[43:32], ch3=[59:48]
-    // -------------------------------------------------------------------------
     function automatic logic [11:0] extract_ch;
         input logic [63:0] word;
         input int          ch;
@@ -149,11 +98,6 @@ module tb_sanity;
         end
     endfunction
 
-    // -------------------------------------------------------------------------
-    // Helper: drive one batch from chunk memory (called at negedge clk_adc)
-    // ev_id : which of the 4 events (0..3)
-    // batch : which 32-sample batch within the event (0..7)
-    // -------------------------------------------------------------------------
     task automatic drive_event_batch;
         input int ev_id;
         input int batch;
@@ -179,12 +123,6 @@ module tb_sanity;
         end
     endtask
 
-    // -------------------------------------------------------------------------
-    // Async capture registers
-    // These always blocks run concurrently with the main initial block,
-    // so they correctly capture L0 / CNN results even if they fire during
-    // the ADC batch driving loop (before the main block's fork starts).
-    // -------------------------------------------------------------------------
     logic        l0_cap_valid = 0;   // set on first posedge of l0_pre_trig
     real         l0_cap_time  = -1.0;
 
@@ -234,9 +172,6 @@ module tb_sanity;
         int pass;
         real cnn_score;
 
-        // ------------------------------------------------------------------
-        // Load chunk hex files  (paths from sanity_paths.svh)
-        // ------------------------------------------------------------------
         $readmemh(`CHUNK_SIG0,   chunk_mem[0]);
         $readmemh(`CHUNK_SIG1,   chunk_mem[1]);
         $readmemh(`CHUNK_SIG2,   chunk_mem[2]);
@@ -248,9 +183,6 @@ module tb_sanity;
             $finish;
         end
 
-        // ------------------------------------------------------------------
-        // Open log files
-        // ------------------------------------------------------------------
         f_wave    = $fopen(`WAVE_CSV,    "w");
         f_results = $fopen(`RESULTS_TXT, "w");
         if (f_wave == 0 || f_results == 0) begin
@@ -260,9 +192,6 @@ module tb_sanity;
         $fwrite(f_wave,    "# ev_id,sample_idx,ch0,ch1,ch2,ch3\n");
         $fwrite(f_results, "# ev_id,type,l0_fired,l0_time_ns,ev_start_ns,cnn_fired,cnn_raw_hex,cnn_score_float,l1_cnn_trig,pass\n");
 
-        // ------------------------------------------------------------------
-        // Reset
-        // ------------------------------------------------------------------
         rst           = 1;
         data_str      = 0;
         cnn_out_ready = 1;
@@ -279,28 +208,21 @@ module tb_sanity;
         pass_count = 0;
         fail_count = 0;
 
-        // ------------------------------------------------------------------
-        // Event loop
-        // ------------------------------------------------------------------
         for (ev = 0; ev < 4; ev++) begin
             $display("\n=== Event %0d / 4  [%s] ===", ev, chunk_type[ev]);
 
-            // --- Clear async capture flags BEFORE driving any data ---
-            // (The always blocks above will set them when events occur.)
             l0_cap_valid = 0;
             l0_cap_time  = -1.0;
             cnn_cap_valid = 0;
             cnn_cap_data  = 0;
             l1_cap_valid  = 0;
 
-            // --- Prime ring buffer with N_PRIME zero batches ---
             for (b = 0; b < N_PRIME; b++) begin
                 @(negedge clk_adc);
                 drive_zero_batch();
                 @(posedge clk_adc);
             end
 
-            // --- Drive 16 event batches (L0 may fire DURING this loop) ---
             ev_start_time_ns = $realtime;
 
             for (b = 0; b < 16; b++) begin
@@ -314,14 +236,9 @@ module tb_sanity;
                 @(posedge clk_adc);
             end
 
-            // Keep driving zeros while we wait for CNN to respond
             @(negedge clk_adc);
             drive_zero_batch();
 
-            // --- Wait for L0 + CNN result, or timeout ---
-            // Use wait() (level-sensitive), NOT @(posedge ...) (edge-sensitive).
-            // This correctly handles the case where L0 already fired during
-            // batch driving above.
             fork : wait_fork
                 begin : wait_branch
                     wait(l0_cap_valid);   // returns immediately if already set
@@ -341,14 +258,10 @@ module tb_sanity;
             join_any
             disable wait_fork;
 
-            // Drain any remaining zeros and let handshakes settle before next event
             repeat(200) @(posedge clk_cnn);
 
-            // --- Pass/fail evaluation ---
             cnn_score = $itor($signed(cnn_cap_data[16:0])) / 256.0;
 
-            // L1 is the hardware threshold decision; use it as primary criterion.
-            // CNN_SCORE_THRESH kept for reference display only.
             if (chunk_type[ev] == "sig") begin
                 pass = l0_cap_valid && l1_cap_valid;
                 $display("  Signal check: l0=%0d  l1=%0d  score=%.4f  -> %s",
@@ -378,9 +291,6 @@ module tb_sanity;
                     l1_cap_valid, pass);
         end
 
-        // ------------------------------------------------------------------
-        // Summary
-        // ------------------------------------------------------------------
         $display("\n========================================");
         $display("  SANITY TEST COMPLETE");
         $display("  Passed: %0d / 4", pass_count);
