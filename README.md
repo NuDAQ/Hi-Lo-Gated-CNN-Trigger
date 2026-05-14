@@ -35,9 +35,10 @@ ADC_STREAM_FIFO   (FIFO_DEPTH-batch elastic buffer, CLK_ADC domain)
     │                   │
     └──► CNN_CHUNK_CAPTURE
               │
-              │  CLK_ADC: Pre-trigger ring buffer (8 batches = 128 samples)
-              │           Post-trigger capture    (8 batches = 128 samples)
-              │           Total chunk: 256 samples → 12-buffer circular queue
+              │  CLK_ADC: Pre-trigger ring buffer (10 slots: 8 pre + 2 pipeline-lag)
+              │           Post-trigger capture    (6 batches = 96 samples)
+              │           BRAM chunk: 128 pre + 128 post = 256 samples total
+              │           → 12-buffer circular queue
               │           Rate monitor → L0_BLANKING (noise suppression)
               │
               │  [True Dual-Port BRAM, 3072 × 64-bit (12 × 256)]
@@ -61,15 +62,20 @@ and drives the active-low `rst_n` that `WRAPPER_TOP` requires.
 
 #### Chunk Window
 
-| Region       | Batches | Samples | BRAM addresses |
-|--------------|---------|---------|----------------|
-| Pre-trigger  | 8       | 128     | 0 – 127        |
-| Post-trigger | 8       | 128     | 128 – 255      |
-| **Total**    | **16**  | **256** | **0 – 255**    |
+| Region                       | Source                    | Batches | Samples  | BRAM addresses |
+|------------------------------|---------------------------|---------|----------|----------------|
+| Pre-trigger                  | `ring_buf[9..2]`          | 8       | 128      | 0 – 127        |
+| Post-trigger (pipeline lag)  | `ring_buf[1..0]`          | 2       | 32       | 128 – 159      |
+| Post-trigger (captured)      | `post_buf[0..5]`          | 6       | 96       | 160 – 255      |
+| **Total**                    |                           | **16**  | **256**  | **0 – 255**    |
 
-Alignment is batch-granular (±15 samples): the triggering batch is the first
-post-trigger batch (addr 128). Signal events typically span tens of samples,
-so batch-level alignment is sufficient.
+`ring_buf` is 10 slots deep: 8 true pre-trigger batches plus 2 pipeline-lag
+batches (`PRE_TRIG_LATENCY = 2`) that have already advanced past the trigger by
+the time `L0_PRE_TRIG` is sampled. The trigger batch occupies `ring_buf[2]`
+→ BRAM addresses 112 – 127 (last pre-trigger batch, ~centred in the window).
+`post_buf` captures the 6 batches that follow in `ADC_POST` state.
+Alignment is batch-granular (±15 samples); signal events typically span tens
+of samples, so this is sufficient.
 
 64-bit word format (one sample across 4 channels):
 ```
@@ -160,9 +166,9 @@ is still occupied by an unprocessed buffer.  Wire both `CHUNK_OVERFLOW` and
 
 | State       | Action                                                                             |
 |-------------|------------------------------------------------------------------------------------|
-| `ADC_IDLE`  | Continuously overwrites an 8-slot ring buffer. If `L0_PRE_TRIG` rises: check `l0_blanking` — if asserted, silently discard; otherwise claim `wr_ptr` slot (set `CHUNK_OVERFLOW` if occupied). |
-| `ADC_POST`  | Captures the 8 batches following the trigger (128 post-trigger samples).           |
-| `ADC_WRITE` | Writes all 256 words to `bram[wr_ptr*256 .. wr_ptr*256+255]` at full CLK_ADC rate. Sets `buf_written_adc(wr_ptr)`, advances `wr_ptr` mod `N_BUF`, returns to `ADC_IDLE`. |
+| `ADC_IDLE`  | Continuously overwrites a 10-slot ring buffer (`ring_buf`). If `L0_PRE_TRIG` rises: check `l0_blanking` — if asserted, silently discard; otherwise claim `wr_ptr` slot (set `CHUNK_OVERFLOW` if occupied). |
+| `ADC_POST`  | Captures 6 batches following the trigger into `post_buf` (96 post-trigger samples). Combined with the 2 pipeline-lag batches already in `ring_buf[1..0]`, this yields 128 post-trigger samples total. |
+| `ADC_WRITE` | Writes all 256 words to `bram[wr_ptr*256 .. wr_ptr*256+255]` at full CLK_ADC rate: `ring_buf[9..0]` (samples 0–159) then `post_buf[0..5]` (samples 160–255). Sets `buf_written_adc(wr_ptr)`, advances `wr_ptr` mod `N_BUF`, returns to `ADC_IDLE`. |
 
 **CNN FSM (CLK_CNN)**
 
@@ -243,6 +249,14 @@ pre-delta value at the same edge — a 1-cycle skew. `tb_thermal.sv` compensates
 with one alignment cycle between L0 detection and the start of the post-trigger
 capture loop.
 
+`CNN_CHUNK_CAPTURE` accounts for an additional `PRE_TRIG_LATENCY = 2` batch-cycle
+pipeline delay (1 cycle `PRE_TRIGGER_1CH` + 1 cycle `coinc_proc/data_str_d`) from
+`data_str_buf` to `L0_PRE_TRIG`. By the time `L0_PRE_TRIG` is sampled, `ring_buf[0..1]`
+already contain 2 post-trigger batches; the true trigger batch is at `ring_buf[2]`.
+`ring_buf` is therefore 10 slots deep (8 pre-trigger + 2 pipeline-lag), and `post_buf`
+captures 6 batches. `tb_thermal.sv` mirrors this with a 12-slot software ring buffer
+(offset 2 relative to `ring_buf`) and logs `ring_sv[11..4]` for pre-trigger.
+
 ---
 
 ### <s>anity Test<s> (The current version does not support this feature)
@@ -303,12 +317,12 @@ prints a per-event summary of the simulation results.
    The sanity chunks are taken from the `cnn-core-wrapper` test dataset, where
    data is pre-scaled to ap_fixed<12,6> range (peak amplitude ~±2000 counts).
    With THRESH=300, `L0_PRE_TRIG` fires on the first ADC batch of the event.
-   At that point the 8-slot pre-trigger ring buffer holds the 3 priming
-   zero-batches (fed before the event) plus batch 0 of the event, leaving the
-   remaining 4 slots as zeros. The CNN therefore receives
-   `[64 zeros | event samples 0–191]` rather than a centred 256-sample window.
-   Events whose score depends on the later half of the waveform may be
-   misclassified. This is a test-setup issue; the RTL window logic is correct.
+   At that point the 10-slot pre-trigger ring buffer (`ring_buf`) holds only
+   the priming zero-batches plus the first few event batches, so the CNN receives
+   a chunk with the signal near BRAM addresses 112–127 but with mostly zeros in
+   addresses 0–111 rather than genuine pre-trigger noise. Events whose score
+   depends on the shape of the pre-trigger baseline may be affected.
+   This is a test-setup issue; the RTL window logic is correct.
 
 2. **Normalization between raw ADC and CNN input scale.**
    The CNN was trained on data normalized to approximately `ADC_count / noise_σ`.
