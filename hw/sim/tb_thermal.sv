@@ -13,11 +13,13 @@
 //
 // Behaviour:
 //   Batches are streamed one per CLK_ADC cycle (DATA_STR=1 every cycle).
-//   A 8-slot software ring buffer mirrors CNN_CHUNK_CAPTURE's ring_buf.
+//   A 12-slot software ring buffer mirrors CNN_CHUNK_CAPTURE's ring_buf (10 slots)
+//   plus a 2-slot look-ahead to account for the pipeline/FSM offset.
 //   When L0_PRE_TRIG asserts, the testbench:
-//     1. Snapshots the 8-slot ring (pre-trigger, 128 samples).
-//     2. Drives 8 more batches as post-trigger (128 samples).
+//     1. Runs 1 alignment cycle (accounts for FSM/combinational delta delay).
+//     2. Drives 5 more batches; logs ring_sv[11..4] + ring_sv[3..0] + post_sv[0..3].
 //     3. Writes the 256-sample chunk waveform to CHUNK_WAVE_CSV.
+//        Trigger batch lands at samples 112-127 (matches hardware BRAM layout).
 //     4. Waits for CNN_OUT_VALID (or timeout) and logs the score.
 //   After N_CHUNKS_CAPTURE chunks the simulation terminates.
 //
@@ -111,13 +113,22 @@ module tb_thermal;
     always #(CNN_CLK_PERIOD / 2.0) clk_cnn = ~clk_cnn;
 
     // -------------------------------------------------------------------------
-    // Software ring buffer mirror — 8 slots, matches CNN_CHUNK_CAPTURE ring_buf
-    //   ring_sv[0] = most recent batch  (= ring_buf(0) in VHDL)
-    //   ring_sv[7] = oldest batch       (= ring_buf(7) in VHDL)
-    // Post-trigger capture buffer
+    // Software ring buffer mirror — 12 slots.
+    //
+    // After the alignment cycle, the offset between ring_sv and hardware ring_buf is:
+    //   ring_sv[k]  = batch (B+1-k),  ring_buf[m] = batch (B-1-m)
+    //   → ring_sv[k] = ring_buf[k-2],  i.e. ring_sv is 2 slots AHEAD of ring_buf.
+    //
+    // Hardware BRAM layout (CNN_CHUNK_CAPTURE, PRE_TRIG_LATENCY=2):
+    //   samples   0-127 : ring_buf[9..2]  ← ring_sv[11..4]  (pre-trigger)
+    //   samples 128-159 : ring_buf[1..0]  ← ring_sv[3..2]   (early post, pipeline lag)
+    //   samples 160-191 : post_buf[0..1]  ← ring_sv[1..0]   (first 2 post batches)
+    //   samples 192-255 : post_buf[2..5]  ← post_sv[0..3]   (last 4 post batches)
+    //
+    // Trigger batch = ring_buf[2] = ring_sv[4] → logged at samples 112-127. ✓
     // -------------------------------------------------------------------------
-    reg [11:0] ring_sv [0:7][0:3][0:15];  // [slot][ch][sample]
-    reg [11:0] post_sv [0:7][0:3][0:15];  // [post_batch][ch][sample]
+    reg [11:0] ring_sv [0:11][0:3][0:15];  // [slot][ch][sample], 12 slots
+    reg [11:0] post_sv [0:4] [0:3][0:15];  // [post_batch][ch][sample], 5 slots
 
     // -------------------------------------------------------------------------
     // Async CNN output capture
@@ -205,7 +216,7 @@ module tb_thermal;
                     void'($fscanf(stim_fd, "%d", adc_ch[c][s]));
 
             // --- Update software ring mirror (shift oldest out, newest in) ---
-            for (slot = 7; slot > 0; slot--)
+            for (slot = 11; slot > 0; slot--)
                 for (c = 0; c < 4; c++)
                     for (s = 0; s < 16; s++)
                         ring_sv[slot][c][s] = ring_sv[slot-1][c][s];
@@ -242,7 +253,7 @@ module tb_thermal;
                     for (c = 0; c < 4; c++)
                         for (s = 0; s < 16; s++)
                             void'($fscanf(stim_fd, "%d", adc_ch[c][s]));
-                    for (slot = 7; slot > 0; slot--)
+                    for (slot = 11; slot > 0; slot--)
                         for (c = 0; c < 4; c++)
                             for (s = 0; s < 16; s++)
                                 ring_sv[slot][c][s] = ring_sv[slot-1][c][s];
@@ -253,35 +264,45 @@ module tb_thermal;
                 @(posedge clk_adc);  // hardware: ADC_IDLE→ADC_POST at this edge
 
                 // ----------------------------------------------------------
-                // Capture 8 post-trigger batches.
-                // The hardware CNN_CHUNK_CAPTURE FSM is now in ADC_POST,
-                // waiting for 8 DATA_STR pulses.
+                // Capture 5 post-trigger batches from file.
+                //
+                // With PRE_TRIG_LATENCY=2, hardware post_buf has 6 slots:
+                //   post_buf[0] = captured at alignment posedge (batch B from FIFO)
+                //   post_buf[1..5] = captured at the 5 posedges below
+                //
+                // ring_sv[1..0] already hold post_buf[0..1] (batches B and B+1);
+                // post_sv[0..3] cover post_buf[2..5] (batches B+2..B+5).
+                // The 5th iteration drives the last hardware ADC_POST pulse without
+                // needing to log it (post_buf[5] = post_sv[3] at p=3 iteration).
                 // ----------------------------------------------------------
-                for (p = 0; p < 8; p++) begin
+                for (p = 0; p < 5; p++) begin
                     if (!$feof(stim_fd)) begin
                         for (c = 0; c < 4; c++)
                             for (s = 0; s < 16; s++)
                                 void'($fscanf(stim_fd, "%d", adc_ch[c][s]));
-                        // Store post batch in software mirror
-                        for (c = 0; c < 4; c++)
-                            for (s = 0; s < 16; s++)
-                                post_sv[p][c][s] = adc_ch[c][s];
+                        // Store first 4 post batches for logging; 5th just drives HW
+                        if (p < 4)
+                            for (c = 0; c < 4; c++)
+                                for (s = 0; s < 16; s++)
+                                    post_sv[p][c][s] = adc_ch[c][s];
                     end
                     @(posedge clk_adc);
                 end
                 data_str = 0;
 
                 // ----------------------------------------------------------
-                // Write waveform CSV:
-                //   Pre-trigger:  ring_sv[7] (oldest) .. ring_sv[0] (newest)
-                //                 = sample indices 0 .. 127
-                //   Post-trigger: post_sv[0] .. post_sv[7]
-                //                 = sample indices 128 .. 255
-                // This mirrors the BRAM write order in CNN_CHUNK_CAPTURE.
+                // Write waveform CSV matching the actual BRAM chunk content:
+                //
+                //   samples   0-127 : ring_sv[11..4]  (pre-trigger, 8 batches)
+                //   samples 128-191 : ring_sv[3..0]   (early post, from ring_buf[1..0]
+                //                                      + post_buf[0..1] via pipeline lag)
+                //   samples 192-255 : post_sv[0..3]   (late post, post_buf[2..5])
+                //
+                // Trigger batch = ring_sv[4] → lands at samples 112-127. ✓
                 // ----------------------------------------------------------
-                for (slot = 7; slot >= 0; slot--) begin
+                for (slot = 11; slot >= 4; slot--) begin
                     for (s = 0; s < 16; s++) begin
-                        automatic int samp_idx = (7 - slot) * 16 + s;
+                        automatic int samp_idx = (11 - slot) * 16 + s;
                         $fwrite(f_wave, "%0d,%0d,%0d,%0d,%0d,%0d\n",
                                 trig_count, samp_idx,
                                 $signed(ring_sv[slot][0][s]),
@@ -290,9 +311,20 @@ module tb_thermal;
                                 $signed(ring_sv[slot][3][s]));
                     end
                 end
-                for (p = 0; p < 8; p++) begin
+                for (slot = 3; slot >= 0; slot--) begin
                     for (s = 0; s < 16; s++) begin
-                        automatic int samp_idx = 128 + p * 16 + s;
+                        automatic int samp_idx = 128 + (3 - slot) * 16 + s;
+                        $fwrite(f_wave, "%0d,%0d,%0d,%0d,%0d,%0d\n",
+                                trig_count, samp_idx,
+                                $signed(ring_sv[slot][0][s]),
+                                $signed(ring_sv[slot][1][s]),
+                                $signed(ring_sv[slot][2][s]),
+                                $signed(ring_sv[slot][3][s]));
+                    end
+                end
+                for (p = 0; p < 4; p++) begin
+                    for (s = 0; s < 16; s++) begin
+                        automatic int samp_idx = 192 + p * 16 + s;
                         $fwrite(f_wave, "%0d,%0d,%0d,%0d,%0d,%0d\n",
                                 trig_count, samp_idx,
                                 $signed(post_sv[p][0][s]),
