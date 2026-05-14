@@ -47,6 +47,11 @@ ADC_STREAM_FIFO   (FIFO_DEPTH-batch elastic buffer, CLK_ADC domain)
               │  CLK_CNN: Stream 256 × 64-bit words to WRAPPER_TOP
               │
               └──► WRAPPER_TOP ──► cnn_core ──► CNN_OUT_DATA / CNN_OUT_VALID
+                                                      │
+                                               comparator (CNN_THRESH)
+                                                      │
+                                                      ▼
+                                               L1_CNN_TRIG (CLK_CNN, 1-cycle pulse)
 ```
 
 #### Clock Domains
@@ -111,6 +116,8 @@ of samples, so this is sufficient.
 | `CNN_OUT_DATA`  | out | 32    | CLK_CNN  | CNN inference score (AXI-S data)         |
 | `CNN_OUT_VALID` | out | 1     | CLK_CNN  | AXI-S valid                             |
 | `CNN_OUT_READY` | in  | 1     | CLK_CNN  | AXI-S ready                             |
+| `CNN_THRESH`    | in  | 17    | static   | Signed threshold in same fixed-point format as `CNN_OUT_DATA[16:0]`; `L1` fires when score > `CNN_THRESH / 256.0`. Example: `17'sd128` → threshold 0.5 |
+| `L1_CNN_TRIG`   | out | 1     | CLK_CNN  | L1 CNN trigger: 1-cycle pulse one CLK_CNN cycle after a `CNN_OUT` handshake whose score exceeds `CNN_THRESH`. CDC to CLK_ADC is the responsibility of the instantiating level. |
 | `CHUNK_OVERFLOW`| out | 1     | CLK_ADC  | Sticky: trigger dropped (circular queue full, outside blanking) |
 | `L0_BLANKING`   | out | 1     | CLK_ADC  | High while rate-based L0 noise blanking is active |
 
@@ -135,6 +142,13 @@ side reads from `rd_ptr` (also mod 12) in strict FIFO order.  With a CNN latency
 < 17 µs and a design goal of ≤ 1 trigger per 20 µs, the 12-slot depth absorbs
 Poisson bursts with ≈ 2σ headroom before blanking engages.
 
+With a 50 kHz typical L0 rate, a 50 μs monitor window contains λ = 2.5 triggers on average.
+A 2σ Poisson burst corresponds to about 6 triggers per window. Since the CNN can drain
+approximately 3 chunks per 50 μs for a 17 μs inference latency, such a burst increases the
+queue occupancy by only about 3 slots. Therefore, a 12-slot circular queue provides sufficient
+headroom for ≈2σ Poisson bursts and can also tolerate a single blanking-threshold window
+of 10 triggers, provided the queue is not already heavily backlogged.
+
 **Rate-based L0 blanking**: A fixed-window rate monitor (50 µs, `WINDOW_CYCLES`
 CLK_ADC cycles) counts *all* raw L0 pulses, including those that arrive while
 blanking is already active.  `WINDOW_CYCLES` is derived at elaboration time from
@@ -151,7 +165,7 @@ compile-time constants in `CNN_CHUNK_CAPTURE.vhd`:
 
 Blanking is evaluated only at each window boundary (natural hold-off).
 The exit condition is both rate ≤ `LO_THRESH` and the circular queue
-fully drained — preventing a premature restart while CNN is still draining
+fully drained, preventing a premature restart while CNN is still draining
 buffered noise events.
 
 During blanking, L0 pulses are silently discarded. `CHUNK_OVERFLOW` is
@@ -159,6 +173,33 @@ During blanking, L0 pulses are silently discarded. `CHUNK_OVERFLOW` is
 `CHUNK_OVERFLOW` fires only when a non-blanking L0 arrives but `wr_ptr`'s slot
 is still occupied by an unprocessed buffer.  Wire both `CHUNK_OVERFLOW` and
 `L0_BLANKING` to ILA probes or slow-control status registers for run-time monitoring.
+
+#### L1 CNN Trigger (`CNN_THRESH` / `L1_CNN_TRIG`)
+
+After the CNN inference completes and its result appears on `CNN_OUT_DATA / CNN_OUT_VALID`,
+a registered comparator in `HILO_CNN_TRIGGER` produces a hard binary L1 decision:
+
+```
+score  =  $signed(CNN_OUT_DATA[16:0]) / 256.0
+L1_CNN_TRIG  ←  '1'  if  score > CNN_THRESH / 256.0,  else '0'
+```
+
+`L1_CNN_TRIG` is a 1-cycle pulse in the **CLK_CNN domain**, fired exactly one CLK_CNN
+cycle after the `CNN_OUT_VALID & CNN_OUT_READY` handshake (registered to prevent
+combinational glitches). The 1-cycle latency is 5 ns at 200 MHz — negligible
+relative to the ~25 µs CNN inference time.
+
+`CNN_THRESH` uses the same signed 17-bit fixed-point encoding as `CNN_OUT_DATA[16:0]`:
+
+| Desired threshold | `CNN_THRESH` value |
+|-------------------|--------------------|
+| 0.5               | `17'sd128`         |
+| 0.0               | `17'sd0`           |
+| −0.5              | `17'sd-128`        |
+| 1.0               | `17'sd256`         |
+
+`L1_CNN_TRIG` is in **CLK_CNN domain**. If downstream logic requires it in CLK_ADC
+domain, insert a 2-FF synchronizer at the instantiating level.
 
 #### CNN_CHUNK_CAPTURE Internal State Machines
 
@@ -226,12 +267,13 @@ bash scripts/run_thermal_sim.sh [--skip-data] [--skip-plot]
 
 **Default trigger configuration**
 
-| Parameter      | Value | Description                          |
-|----------------|-------|--------------------------------------|
-| `THRESH`       | 195   | Read from `stim_meta.txt` (3σ)       |
-| `HILO_WINDOW`  | 5     | Samples                              |
-| `COINC_WINDOW` | 30    | Samples (spans ~2 batches)           |
-| `BIN_THR`      | 2     | Min channels in coincidence          |
+| Parameter      | Value    | Description                                    |
+|----------------|----------|------------------------------------------------|
+| `THRESH`       | 195      | Read from `stim_meta.txt` (3σ)                 |
+| `HILO_WINDOW`  | 5        | Samples                                        |
+| `COINC_WINDOW` | 30       | Samples (spans ~2 batches)                     |
+| `BIN_THR`      | 2        | Min channels in coincidence                    |
+| `CNN_THRESH`   | 128 (0.5)| L1 fires if score > 0.5; noise should not fire |
 
 **What the test verifies**
 
@@ -292,12 +334,13 @@ Steps executed by the script:
 
 **What the test verifies**
 
-| Check                          | Expected outcome                                          |
-|-------------------------------|-----------------------------------------------------------|
-| `L0_PRE_TRIG` for signal events | Fires within 2 ADC cycles (64 ns) of the triggering batch |
-| `L0_PRE_TRIG` for noise event   | Does not fire (or CNN score ≤ +0.5 if it does)          |
-| CNN output for signal events   | `$signed(CNN_OUT_DATA[16:0]) / 256.0 > +0.5`            |
-| CNN inference latency          | Typically 10–30 µs at 200 MHz (256 words at full throughput) |
+| Check                          | Expected outcome                                                     |
+|-------------------------------|----------------------------------------------------------------------|
+| `L0_PRE_TRIG` for signal events | Fires within a few ADC cycles of the triggering batch              |
+| `L1_CNN_TRIG` for signal events | Fires (score > `CNN_THRESH / 256.0`); primary pass criterion       |
+| `L0_PRE_TRIG` for noise event   | Does not fire (or `L1_CNN_TRIG` stays 0 if L0 does fire)          |
+| `L1_CNN_TRIG` for noise event   | Must NOT fire; primary pass criterion for noise                    |
+| CNN inference latency          | Typically 10–30 µs at 200 MHz (256 words at full throughput)        |
 | `CHUNK_OVERFLOW`               | Set during high-amplitude events (expected — see Known Limitations) |
 
 Pass/fail results are written to `hw/sim/sanity_data/sanity_results.txt`.
