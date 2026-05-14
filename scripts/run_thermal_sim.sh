@@ -175,8 +175,10 @@ if [[ $SKIP_PLOT -eq 0 ]]; then
     hr
     echo "[6/6] Plotting ..."
     python3 "${SCRIPT_DIR}/plot_thermal_results.py" \
-        --data-dir "$DATA_OUT" \
-        --thresh   "$THRESH"
+        --data-dir    "$DATA_OUT" \
+        --thresh      "$THRESH"   \
+        --coinc-window 30         \
+        --bin-thr      2
 fi
 
 hr
@@ -185,6 +187,7 @@ echo "Done. Plots: ${DATA_OUT}/plots/"
 if [[ -f "${DATA_OUT}/cnn_results.txt" ]]; then
     echo ""
     grep -v '^#' "${DATA_OUT}/cnn_results.txt" | awk -F',' \
-        '{printf "  chunk %s : score=%s\n", $1, $5}'
+        '{score=$5+0; prob=1/(1+exp(-score));
+          printf "  chunk %s : prob=%.4f  (score=%.4f)\n", $1, prob, score}'
 fi
 echo ""

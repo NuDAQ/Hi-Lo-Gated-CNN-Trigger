@@ -30,6 +30,7 @@ Usage:
 """
 
 import argparse
+import math
 import pathlib
 
 import numpy as np
@@ -51,8 +52,8 @@ def emulate_hilo(data: np.ndarray,
                  coinc_window: int,
                  bin_thr: int):
     N = len(data)
-    hilo_window  = min(int(hilo_window),  16)
-    coinc_window = min(int(coinc_window), 16)   # clamped to N_SAMPLES=16
+    hilo_window  = min(int(hilo_window), 16)
+    coinc_window = min(int(coinc_window), 32)   # clamped to hardware max of 32
 
     gate4 = np.zeros((N, 4), dtype=bool)
     for ch in range(4):
@@ -82,10 +83,15 @@ def emulate_hilo(data: np.ndarray,
 # Per-Chunk Plot
 # ---------------------------------------------------------------------------
 
+def sigmoid(x: float) -> float:
+    return 1.0 / (1.0 + math.exp(-x))
+
+
 def plot_chunk(chunk_id: int,
                data: np.ndarray,
                cnn_fired: bool,
                cnn_score: float,
+               cnn_prob: float,
                thresh: int,
                hilo_window: int,
                coinc_window: int,
@@ -164,9 +170,9 @@ def plot_chunk(chunk_id: int,
     ax_m.grid(axis="x", lw=0.3, alpha=0.5)
 
     # ---- CNN annotation ----
-    score_str  = (f"CNN score = {cnn_score:.4f}"
+    score_str  = (f"CNN prob = {cnn_prob:.4f}  (score = {cnn_score:.4f})"
                   if cnn_fired else "CNN: no output (timeout)")
-    result_str = "THERMAL NOISE (expected CNN < 0.5)"
+    result_str = "THERMAL NOISE (expected prob < 0.5)"
     result_col = "steelblue"
 
     fig.text(0.97, 0.97,
@@ -206,8 +212,8 @@ def main():
     parser.add_argument("--thresh",       type=int,   default=192,
                         help="ADC counts threshold (default: 192 = 3σ×64)")
     parser.add_argument("--hilo-window",  type=int,   default=5)
-    parser.add_argument("--coinc-window", type=int,   default=16)
-    parser.add_argument("--bin-thr",      type=int,   default=1)
+    parser.add_argument("--coinc-window", type=int,   default=30)
+    parser.add_argument("--bin-thr",      type=int,   default=2)
     parser.add_argument("--sigma-scale",  type=float, default=64.0)
     args = parser.parse_args()
 
@@ -261,6 +267,7 @@ def main():
 
         cnn_fired = bool(int(row["cnn_fired"]))
         cnn_score = float(row["cnn_score_float"])
+        cnn_prob  = sigmoid(cnn_score) if cnn_fired else 0.0
 
         out_path = plot_dir / f"chunk_{chunk_id}_thermal.png"
         print(f"\nPlotting chunk {chunk_id} ...")
@@ -269,6 +276,7 @@ def main():
             data         = data,
             cnn_fired    = cnn_fired,
             cnn_score    = cnn_score,
+            cnn_prob     = cnn_prob,
             thresh       = args.thresh,
             hilo_window  = args.hilo_window,
             coinc_window = args.coinc_window,
@@ -288,8 +296,9 @@ def main():
     for _, r in results_df.iterrows():
         if int(r["cnn_fired"]):
             score = float(r["cnn_score_float"])
-            verdict = "<0.5 — correct (noise)" if score < 0.5 else ">0.5 — unexpected"
-            print(f"  chunk {int(r['chunk_id'])}: score={score:.4f}  ({verdict})")
+            prob  = sigmoid(score)
+            verdict = "<0.5 — correct (noise)" if prob < 0.5 else "≥0.5 — unexpected"
+            print(f"  chunk {int(r['chunk_id'])}: prob={prob:.4f}  ({verdict})")
         else:
             print(f"  chunk {int(r['chunk_id'])}: no CNN output (timeout)")
     print(f"{'='*50}\n")

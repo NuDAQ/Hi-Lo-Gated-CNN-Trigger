@@ -50,8 +50,8 @@ module tb_thermal;
     // -------------------------------------------------------------------------
     parameter logic [11:0] P_THRESH       = 12'd192;  // 3σ × 64  (update from stim_meta)
     parameter logic [ 4:0] P_HILO_WINDOW  = 5'd5;     // 5 samples
-    parameter logic [ 5:0] P_COINC_WINDOW = 6'd16;    // 16 samples (= N_SAMPLES, max effective)
-    parameter logic [ 3:0] P_BIN_THR      = 4'd1;     // single-channel threshold
+    parameter logic [ 5:0] P_COINC_WINDOW = 6'd30;    // 30 samples (spans ~2 batches; max 32)
+    parameter logic [ 3:0] P_BIN_THR      = 4'd2;     // ≥2 channels in coincidence
 
     // Stop simulation after this many L0-triggered CNN outputs
     parameter int N_CHUNKS_CAPTURE = 3;
@@ -131,9 +131,11 @@ module tb_thermal;
         if (cnn_out_valid && cnn_out_ready && !cnn_cap_valid) begin
             cnn_cap_data  <= cnn_out_data;
             cnn_cap_valid <= 1;
-            $display("  [%0t] CNN_OUT captured: 0x%08h  score=%.4f",
-                     $time, cnn_out_data,
-                     $itor($signed(cnn_out_data[16:0])) / 256.0);
+            begin
+                automatic real _s = $itor($signed(cnn_out_data[16:0])) / 256.0;
+                $display("  [%0t] CNN_OUT captured: 0x%08h  score=%.4f  prob=%.4f",
+                         $time, cnn_out_data, _s, 1.0 / (1.0 + $exp(-_s)));
+            end
         end
     end
 
@@ -319,14 +321,16 @@ module tb_thermal;
                 begin
                     automatic real cnn_score =
                         $itor($signed(cnn_cap_data[16:0])) / 256.0;
+                    automatic real cnn_prob =
+                        cnn_cap_valid ? 1.0 / (1.0 + $exp(-cnn_score)) : 0.0;
                     $fwrite(f_results, "%0d,%.1f,%0d,0x%08h,%.6f,%0d\n",
                             trig_count, l0_time,
                             cnn_cap_valid ? 1 : 0,
                             cnn_cap_data, cnn_score,
                             chunk_overflow);
                     $fflush(f_results);
-                    $display("  CNN score = %.4f  (cnn_fired=%0d)",
-                             cnn_score, cnn_cap_valid ? 1 : 0);
+                    $display("  CNN prob  = %.4f  (cnn_fired=%0d)",
+                             cnn_prob, cnn_cap_valid ? 1 : 0);
                 end
 
                 trig_count++;
