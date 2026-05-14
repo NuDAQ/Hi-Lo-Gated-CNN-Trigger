@@ -1,0 +1,21 @@
+INFO: [VRFC 10-163] Analyzing VHDL file "/home/work1/Works/HiLoGatedCNNTrigger/.bender/git/checkouts/hilo-trigger-30f6769e8eceb014/hw/rtl/PRE_TRIGGER_PKG.vhd" into library xil_defaultlib
+INFO: [VRFC 10-163] Analyzing VHDL file "/home/work1/Works/HiLoGatedCNNTrigger/.bender/git/checkouts/hilo-trigger-30f6769e8eceb014/hw/rtl/Mult_to_bin.vhd" into library xil_defaultlib
+INFO: [VRFC 10-3107] analyzing entity 'MULT2BIN'
+INFO: [VRFC 10-163] Analyzing VHDL file "/home/work1/Works/HiLoGatedCNNTrigger/.bender/git/checkouts/hilo-trigger-30f6769e8eceb014/hw/rtl/Pre_trigger_1ch.vhd" into library xil_defaultlib
+INFO: [VRFC 10-3107] analyzing entity 'PRE_TRIGGER_1CH'
+INFO: [VRFC 10-163] Analyzing VHDL file "/home/work1/Works/HiLoGatedCNNTrigger/.bender/git/checkouts/hilo-trigger-30f6769e8eceb014/hw/rtl/Pre_trigger.vhd" into library xil_defaultlib
+INFO: [VRFC 10-3107] analyzing entity 'PRE_TRIGGER'
+INFO: [VRFC 10-163] Analyzing VHDL file "/home/work1/Works/HiLoGatedCNNTrigger/.bender/git/checkouts/hilo-trigger-30f6769e8eceb014/hw/sim/tb_pre_trigger_1ch.vhd" into library xil_defaultlib
+INFO: [VRFC 10-3107] analyzing entity 'tb_pre_trigger_1ch'
+INFO: [VRFC 10-163] Analyzing VHDL file "/home/work1/Works/HiLoGatedCNNTrigger/.bender/git/checkouts/hilo-trigger-30f6769e8eceb014/hw/sim/tb_pre_trigger.vhd" into library xil_defaultlib
+INFO: [VRFC 10-3107] analyzing entity 'tb_pre_trigger'
+INFO: [VRFC 10-163] Analyzing VHDL file "/home/work1/Works/HiLoGatedCNNTrigger/.bender/git/checkouts/hilo-trigger-30f6769e8eceb014/hw/sim/tb_pre_trigger_cosim.vhd" into library xil_defaultlib
+INFO: [VRFC 10-3107] analyzing entity 'tb_pre_trigger_cosim'
+INFO: [VRFC 10-163] Analyzing VHDL file "/home/work1/Works/HiLoGatedCNNTrigger/hw/rtl/ADC_STREAM_FIFO.vhd" into library xil_defaultlib
+INFO: [VRFC 10-3107] analyzing entity 'ADC_STREAM_FIFO'
+INFO: [VRFC 10-163] Analyzing VHDL file "/home/work1/Works/HiLoGatedCNNTrigger/hw/rtl/CNN_CHUNK_CAPTURE.vhd" into library xil_defaultlib
+INFO: [VRFC 10-3107] analyzing entity 'CNN_CHUNK_CAPTURE'
+INFO: [VRFC 10-163] Analyzing VHDL file "/home/work1/Works/HiLoGatedCNNTrigger/hw/rtl/HILO_CNN_TRIGGER.vhd" into library xil_defaultlib
+INFO: [VRFC 10-3107] analyzing entity 'HILO_CNN_TRIGGER'
+INFO: [VRFC 10-163] Analyzing VHDL file "/home/work1/Works/HiLoGatedCNNTrigger/hw/sim/HILO_CNN_TRIGGER_TB_WRAP.vhd" into library xil_defaultlib
+INFO: [VRFC 10-3107] analyzing entity 'HILO_CNN_TRIGGER_TB_WRAP'
