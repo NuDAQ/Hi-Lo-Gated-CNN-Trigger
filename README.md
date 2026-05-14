@@ -3,7 +3,7 @@
 
 ## Introduction
 
-A Hi-Lo Gated CNN Trigger for ARIANNA, a neutrino experiment. This is a submodule for the DAQ System. This module is a 4-channel trigger, composed of a Hi-Lo pre-trigger followed by an AI trigger. [Here](https://github.com/NuDAQ/Hi-Lo-Trigger) is the repository for the Hi-Lo trigger.
+A Hi-Lo Gated CNN Trigger for ARIANNA, a neutrino experiment. This is a submodule for the DAQ System. This module is a 4-channel trigger, composed of a Hi-Lo pre-trigger followed by an AI trigger. Here are the newest release for the [Hi-Lo trigger](https://github.com/NuDAQ/Hi-Lo-Trigger/releases), [CNN core generator](https://github.com/NuDAQ/CNN-Core-Generator/releases), and [CNN core wrapper](https://github.com/NuDAQ/CNN-Core-Wrapper/releases).
 
 ### The Structure
 
@@ -11,13 +11,13 @@ A Hi-Lo Gated CNN Trigger for ARIANNA, a neutrino experiment. This is a submodul
 
 ```
 HILO_CNN_TRIGGER              hw/rtl/HILO_CNN_TRIGGER.vhd   (top-level, structural)
-├── ADC_STREAM_FIFO           hw/rtl/ADC_STREAM_FIFO.vhd    — elastic ADC batch FIFO
+├── ADC_STREAM_FIFO           hw/rtl/ADC_STREAM_FIFO.vhd
 ├── PRE_TRIGGER               [dep: hilo-trigger v2.2.4]    — L0 bipolar pre-trigger
 │   ├── PRE_TRIGGER_1CH × 4
 │   └── MULT2BIN × 32
-├── CNN_CHUNK_CAPTURE         hw/rtl/CNN_CHUNK_CAPTURE.vhd  — ring buffer + 12-buffer circular queue + rate blanking + CDC
-└── WRAPPER_TOP               [dep: cnn-core-wrapper v1.0.1] — CNN AXI-Stream wrapper
-    └── cnn_core              [dep: cnn-core v1.0.4]         — HLS-generated RTL
+├── CNN_CHUNK_CAPTURE         hw/rtl/CNN_CHUNK_CAPTURE.vhd
+└── WRAPPER_TOP               [dep: cnn-core-wrapper v1.0.1]
+    └── cnn_core              [dep: cnn-core v1.0.4]
 ```
 
 #### Data Flow
@@ -53,7 +53,7 @@ ADC_STREAM_FIFO   (FIFO_DEPTH-batch elastic buffer, CLK_ADC domain)
 
 | Clock    | Typical frequency | Responsibilities                                      |
 |----------|-------------------|-------------------------------------------------------|
-| `CLK_ADC`| 62.5 MHz          | ADC ingestion, Hi-Lo trigger, ring buffer, BRAM write |
+| `CLK_ADC`| >= 62.5 MHz       | ADC ingestion, Hi-Lo trigger, ring buffer, BRAM write |
 | `CLK_CNN`| 200 MHz           | CNN streaming (AXI-S), BRAM read, WRAPPER_TOP control |
 
 `RST` is shared (active-high, synchronous to `CLK_ADC`).
@@ -129,13 +129,13 @@ u_TRIG_B : entity work.HILO_CNN_TRIGGER
 
 #### 12-Buffer Circular Queue and Rate-Based L0 Blanking
 
-**Circular queue** — `CNN_CHUNK_CAPTURE` maintains 12 BRAM slots (3072 × 64-bit).
+**Circular queue**: `CNN_CHUNK_CAPTURE` maintains 12 BRAM slots (3072 × 64-bit).
 The ADC side writes to `wr_ptr` and advances it mod 12 after each chunk; the CNN
 side reads from `rd_ptr` (also mod 12) in strict FIFO order.  With a CNN latency
 < 17 µs and a design goal of ≤ 1 trigger per 20 µs, the 12-slot depth absorbs
 Poisson bursts with ≈ 2σ headroom before blanking engages.
 
-**Rate-based L0 blanking** — A fixed-window rate monitor (50 µs, `WINDOW_CYCLES`
+**Rate-based L0 blanking**: A fixed-window rate monitor (50 µs, `WINDOW_CYCLES`
 CLK_ADC cycles) counts *all* raw L0 pulses, including those that arrive while
 blanking is already active.  `WINDOW_CYCLES` is derived at elaboration time from
 the `CLK_ADC_HZ` generic (`CLK_ADC_HZ / 20_000`), so the window remains 50 µs
@@ -150,11 +150,11 @@ compile-time constants in `CNN_CHUNK_CAPTURE.vhd`:
 | `LO_THRESH`     | 3       | Exit blanking:  ≤ 3  L0 per window (<1/15 µs)|
 
 Blanking is evaluated only at each window boundary (natural hold-off).
-The exit condition is **both** rate ≤ `LO_THRESH` **and** the circular queue
+The exit condition is both rate ≤ `LO_THRESH` and the circular queue
 fully drained — preventing a premature restart while CNN is still draining
 buffered noise events.
 
-During blanking, L0 pulses are **silently discarded** — `CHUNK_OVERFLOW` is
+During blanking, L0 pulses are silently discarded. `CHUNK_OVERFLOW` is
 *not* set (intentional discard differs from a resource overflow).
 `CHUNK_OVERFLOW` fires only when a non-blanking L0 arrives but `wr_ptr`'s slot
 is still occupied by an unprocessed buffer.  Wire both `CHUNK_OVERFLOW` and
@@ -166,7 +166,7 @@ is still occupied by an unprocessed buffer.  Wire both `CHUNK_OVERFLOW` and
 
 | State       | Action                                                                             |
 |-------------|------------------------------------------------------------------------------------|
-| `ADC_IDLE`  | Continuously overwrites a 10-slot ring buffer (`ring_buf`). If `L0_PRE_TRIG` rises: check `l0_blanking` — if asserted, silently discard; otherwise claim `wr_ptr` slot (set `CHUNK_OVERFLOW` if occupied). |
+| `ADC_IDLE`  | Continuously overwrites a 10-slot ring buffer (`ring_buf`). If `L0_PRE_TRIG` rises: check `l0_blanking`. If asserted, silently discard; otherwise claim `wr_ptr` slot (set `CHUNK_OVERFLOW` if occupied). |
 | `ADC_POST`  | Captures 6 batches following the trigger into `post_buf` (96 post-trigger samples). Combined with the 2 pipeline-lag batches already in `ring_buf[1..0]`, this yields 128 post-trigger samples total. |
 | `ADC_WRITE` | Writes all 256 words to `bram[wr_ptr*256 .. wr_ptr*256+255]` at full CLK_ADC rate: `ring_buf[9..0]` (samples 0–159) then `post_buf[0..5]` (samples 160–255). Sets `buf_written_adc(wr_ptr)`, advances `wr_ptr` mod `N_BUF`, returns to `ADC_IDLE`. |
 
@@ -199,7 +199,7 @@ signal rst_s1  : std_logic := '1';
 signal rst_cnn : std_logic := '1';
 ```
 
-This sets `RST_N_CNN = '0'` (active-low) at simulation time 0 — before any `CLK_CNN` edges — so `cnn_core` receives a proper reset from the start. Without this, XSim leaves `ap_idle` uninitialized (`'x'`) because the HLS-generated Verilog uses blocking assignments whose initial values depend on reset.
+This sets `RST_N_CNN = '0'` (active-low) at simulation time 0 (before any `CLK_CNN` edges), so `cnn_core` receives a proper reset from the start. Without this, XSim leaves `ap_idle` uninitialized (`'x'`) because the HLS-generated Verilog uses blocking assignments whose initial values depend on reset.
 
 ## Simulation
 
@@ -235,7 +235,9 @@ bash scripts/run_thermal_sim.sh [--skip-data] [--skip-plot]
 
 **What the test verifies**
 
-All captured chunks are thermal noise — CNN probability (sigmoid of output score)
+Simulation for real signal will not be conducted here. This is solely for demonstrating and verifying the position of the triggered event within the chunk, thereby ensuring it is fed into the CNN core. Signal simulation should be performed in the repositories related to the [CNN core generator](https://github.com/NuDAQ/CNN-Core-Generator) and [CNN core wrapper](https://github.com/NuDAQ/CNN-Core-Wrapper).
+
+All captured chunks are thermal noise at the moment. CNN probability (sigmoid of output score)
 should be well below 0.5 for every chunk. Per-chunk results are written to
 `hw/sim/thermal_data/cnn_results.txt`; waveform plots to
 `hw/sim/thermal_data/plots/`.
@@ -245,7 +247,7 @@ should be well below 0.5 for every chunk. Per-chunk results are written to
 `PRE_TRIG` is a combinational output of `PRE_TRIGGER`. In mixed-language
 simulation (SV + VHDL), the SV testbench reads the settled combinational value
 after each `@(posedge clk_adc)`, while the VHDL `ADC_FSM` samples the
-pre-delta value at the same edge — a 1-cycle skew. `tb_thermal.sv` compensates
+pre-delta value at the same edge, a 1-cycle skew. `tb_thermal.sv` compensates
 with one alignment cycle between L0 detection and the start of the post-trigger
 capture loop.
 
@@ -259,7 +261,7 @@ captures 6 batches. `tb_thermal.sv` mirrors this with a 12-slot software ring bu
 
 ---
 
-### <s>anity Test<s> (The current version does not support this feature)
+### <s>Sanity Test</s> (The current version does not support this feature)
 
 `scripts/run_sanity_sim.sh` runs a self-contained XSim batch simulation against
 3 signal and 1 noise events from the `cnn-core-wrapper` test dataset.
