@@ -11,7 +11,7 @@ A Hi-Lo Gated CNN Trigger for ARIANNA, a neutrino experiment. This is a submodul
 
 ```
 HILO_CNN_TRIGGER              hw/rtl/HILO_CNN_TRIGGER.vhd   (top-level, structural)
-├── PRE_TRIGGER               [dep: hilo-trigger v2.2.3]    — L0 bipolar pre-trigger
+├── PRE_TRIGGER               [dep: hilo-trigger v2.2.4]    — L0 bipolar pre-trigger
 │   ├── PRE_TRIGGER_1CH × 4
 │   └── MULT2BIN × 32
 ├── CNN_CHUNK_CAPTURE         hw/rtl/CNN_CHUNK_CAPTURE.vhd  — ring buffer + ping-pong + CDC
@@ -84,8 +84,8 @@ so batch-level alignment is sufficient.
 | `DATA_STR`      | in  | 1     | CLK_ADC  | Data strobe — one pulse per 16-sample batch |
 | `ADC_DATA4`     | in  | 4×16×12 | CLK_ADC | ADC samples, `adc_data4_type`           |
 | `THRESH`        | in  | 12    | static   | Absolute threshold (ADC counts)          |
-| `HILO_WINDOW`   | in  | 5     | static   | Hi-Lo coincidence window (≤ 16 samples)  |
-| `COINC_WINDOW`  | in  | 6     | static   | Channel coincidence smear (≤ 32 samples) |
+| `HILO_WINDOW`   | in  | 5     | static   | Hi-Lo bipolar gate window per channel (0–16 samples) |
+| `COINC_WINDOW`  | in  | 6     | static   | Channel coincidence smear (0–32 samples, independent of batch size) |
 | `BIN_THR`       | in  | 4     | static   | Min active channels for `L0_PRE_TRIG`   |
 | `L0_PRE_TRIG`   | out | 1     | CLK_ADC  | Real-time L0 pre-trigger output          |
 | `CNN_OUT_DATA`  | out | 32    | CLK_CNN  | CNN inference score (AXI-S data)         |
@@ -155,6 +155,49 @@ signal rst_cnn : std_logic := '1';
 This sets `RST_N_CNN = '0'` (active-low) at simulation time 0 — before any `CLK_CNN` edges — so `cnn_core` receives a proper reset from the start. Without this, XSim leaves `ap_idle` uninitialized (`'x'`) because the HLS-generated Verilog uses blocking assignments whose initial values depend on reset.
 
 ## Simulation
+
+### Thermal Noise Test
+
+`scripts/run_thermal_sim.sh` streams continuous thermal noise data through the
+full pipeline and captures the first N chunks that pass `L0_PRE_TRIG`. The
+stimulus is pre-converted from the ARIANNA thermal noise dataset
+(`Hi-Lo-Trigger/analysis/data/thermal`) by `prepare_thermal_sim.py`.
+
+**Running**
+
+```bash
+cd <project root>
+bash scripts/run_thermal_sim.sh [--skip-data] [--skip-plot]
+```
+
+`--skip-data` reuses an existing `stimulus.txt`; `--skip-plot` skips the Python plotting step.
+
+**Default trigger configuration**
+
+| Parameter      | Value | Description                          |
+|----------------|-------|--------------------------------------|
+| `THRESH`       | 195   | Read from `stim_meta.txt` (3σ)       |
+| `HILO_WINDOW`  | 5     | Samples                              |
+| `COINC_WINDOW` | 30    | Samples (spans ~2 batches)           |
+| `BIN_THR`      | 2     | Min channels in coincidence          |
+
+**What the test verifies**
+
+All captured chunks are thermal noise — CNN probability (sigmoid of output score)
+should be well below 0.5 for every chunk. Per-chunk results are written to
+`hw/sim/thermal_data/cnn_results.txt`; waveform plots to
+`hw/sim/thermal_data/plots/`.
+
+**Timing note**
+
+`PRE_TRIG` is a combinational output of `PRE_TRIGGER`. In mixed-language
+simulation (SV + VHDL), the SV testbench reads the settled combinational value
+after each `@(posedge clk_adc)`, while the VHDL `ADC_FSM` samples the
+pre-delta value at the same edge — a 1-cycle skew. `tb_thermal.sv` compensates
+with one alignment cycle between L0 detection and the start of the post-trigger
+capture loop.
+
+---
 
 ### Sanity Test
 
@@ -234,12 +277,12 @@ Add `.xdc` constraint files manually (not managed by Bender).
    The sanity chunks are taken from the `cnn-core-wrapper` test dataset, where
    data is pre-scaled to ap_fixed<12,6> range (peak amplitude ~±2000 counts).
    With THRESH=300, `L0_PRE_TRIG` fires on the first ADC batch of the event.
-   At that point the 4-slot pre-trigger ring buffer holds the 3 priming
-   zero-batches (fed before the event) plus batch 0 of the event. The CNN
-   therefore receives `[96 zeros | event samples 0–159]` rather than the full
-   256-sample event window. Events whose CNN score depends on the later half
-   of the waveform will be misclassified. This is a test configuration issue;
-   the RTL window logic is correct.
+   At that point the 8-slot pre-trigger ring buffer holds the 3 priming
+   zero-batches (fed before the event) plus batch 0 of the event, leaving the
+   remaining 4 slots as zeros. The CNN therefore receives
+   `[64 zeros | event samples 0–191]` rather than a centred 256-sample window.
+   Events whose score depends on the later half of the waveform may be
+   misclassified. This is a test-setup issue; the RTL window logic is correct.
 
 2. **Normalization between raw ADC and CNN input scale.**
    The CNN was trained on data normalized to approximately `ADC_count / noise_σ`.
@@ -263,9 +306,9 @@ Add `.xdc` constraint files manually (not managed by Bender).
 - **Updating the CNN model**: replace `models/hgq_config_*.keras` in the
   `cnn-core` repo, re-run `vitis_hls -f build_prj.tcl`, then bump the
   `cnn-core` version in `Bender.yml` and run `bender update`.
-- **Changing batch size**: `adc_data_type` (16 samples, default in v2.2.3) is defined in the
-  `hilo-trigger` package.  Changing the batch size requires a coordinated
-  update of that dependency and all files in this repo.
+- **Changing batch size**: `N_SAMPLES` (16 by default) is a package constant in
+  `hilo-trigger`. Changing it requires a coordinated update of that dependency
+  and all files in this repo that assume 16 samples per batch.
 - **CHUNK_OVERFLOW**: non-zero overflow during a run indicates the CNN
   inference time is longer than the mean trigger inter-arrival time.
   Reduce the trigger rate, increase `BIN_THR`, or widen `THRESH`.
