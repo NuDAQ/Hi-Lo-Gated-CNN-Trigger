@@ -92,6 +92,7 @@ def plot_chunk(chunk_id: int,
                cnn_fired: bool,
                cnn_score: float,
                cnn_prob: float,
+               l1_fired: bool,
                thresh: int,
                hilo_window: int,
                coinc_window: int,
@@ -172,11 +173,12 @@ def plot_chunk(chunk_id: int,
     # ---- CNN annotation ----
     score_str  = (f"CNN prob = {cnn_prob:.4f}  (score = {cnn_score:.4f})"
                   if cnn_fired else "CNN: no output (timeout)")
+    l1_str     = f"L1_CNN_TRIG = {'1  ← unexpected' if l1_fired else '0  ✓ correct'}"
     result_str = "THERMAL NOISE (expected prob < 0.5)"
-    result_col = "steelblue"
+    result_col = "red" if l1_fired else "steelblue"
 
     fig.text(0.97, 0.97,
-             f"{result_str}\n{score_str}",
+             f"{result_str}\n{score_str}\n{l1_str}",
              ha="right", va="top", fontsize=10,
              color=result_col,
              bbox=dict(boxstyle="round,pad=0.3",
@@ -243,7 +245,8 @@ def main():
 
     results_df = pd.read_csv(results_path, comment="#",
                              names=["chunk_id", "l0_time_ns", "cnn_fired",
-                                    "cnn_raw_hex", "cnn_score_float", "overflow"])
+                                    "cnn_raw_hex", "cnn_score_float",
+                                    "l1_cnn_trig", "overflow"])
     print(f"Loaded results: {len(results_df)} chunks")
     print(results_df.to_string(index=False))
 
@@ -268,6 +271,7 @@ def main():
         cnn_fired = bool(int(row["cnn_fired"]))
         cnn_score = float(row["cnn_score_float"])
         cnn_prob  = sigmoid(cnn_score) if cnn_fired else 0.0
+        l1_fired  = bool(int(row["l1_cnn_trig"]))
 
         out_path = plot_dir / f"chunk_{chunk_id}_thermal.png"
         print(f"\nPlotting chunk {chunk_id} ...")
@@ -277,6 +281,7 @@ def main():
             cnn_fired    = cnn_fired,
             cnn_score    = cnn_score,
             cnn_prob     = cnn_prob,
+            l1_fired     = l1_fired,
             thresh       = args.thresh,
             hilo_window  = args.hilo_window,
             coinc_window = args.coinc_window,
@@ -297,8 +302,10 @@ def main():
         if int(r["cnn_fired"]):
             score = float(r["cnn_score_float"])
             prob  = sigmoid(score)
+            l1    = int(r["l1_cnn_trig"])
             verdict = "<0.5 — correct (noise)" if prob < 0.5 else "≥0.5 — unexpected"
-            print(f"  chunk {int(r['chunk_id'])}: prob={prob:.4f}  ({verdict})")
+            l1_str  = "L1=0 ✓" if l1 == 0 else "L1=1 ← unexpected"
+            print(f"  chunk {int(r['chunk_id'])}: prob={prob:.4f}  {l1_str}  ({verdict})")
         else:
             print(f"  chunk {int(r['chunk_id'])}: no CNN output (timeout)")
     print(f"{'='*50}\n")

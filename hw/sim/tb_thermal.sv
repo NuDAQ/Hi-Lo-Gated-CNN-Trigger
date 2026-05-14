@@ -55,6 +55,10 @@ module tb_thermal;
     parameter logic [ 5:0] P_COINC_WINDOW = 6'd30;    // 30 samples (spans ~2 batches; max 32)
     parameter logic [ 3:0] P_BIN_THR      = 4'd2;     // ≥2 channels in coincidence
 
+    // CNN inference threshold: L1 fires when score = CNN_OUT_DATA[16:0]/256.0 > P_CNN_THRESH/256.0
+    // Default 0.5 → raw value 128.  Thermal noise should not exceed this.
+    parameter logic signed [16:0] P_CNN_THRESH = 17'sd128;
+
     // Stop simulation after this many L0-triggered CNN outputs
     parameter int N_CHUNKS_CAPTURE = 3;
 
@@ -87,6 +91,7 @@ module tb_thermal;
     wire [31:0] cnn_out_data;
     wire        cnn_out_valid;
     reg         cnn_out_ready = 1;
+    wire        l1_cnn_trig;
     wire        chunk_overflow;
 
     // -------------------------------------------------------------------------
@@ -106,6 +111,8 @@ module tb_thermal;
         .CNN_OUT_DATA   (cnn_out_data),
         .CNN_OUT_VALID  (cnn_out_valid),
         .CNN_OUT_READY  (cnn_out_ready),
+        .CNN_THRESH     (P_CNN_THRESH),
+        .L1_CNN_TRIG    (l1_cnn_trig),
         .CHUNK_OVERFLOW (chunk_overflow)
     );
 
@@ -150,6 +157,17 @@ module tb_thermal;
         end
     end
 
+    // L1 CNN trigger: fires 1 CLK_CNN cycle after CNN_OUT handshake when score > CNN_THRESH
+    logic l1_cap_valid = 0;
+
+    always @(posedge clk_cnn) begin
+        if (l1_cnn_trig && !l1_cap_valid) begin
+            l1_cap_valid <= 1;
+            $display("  [%0t] L1_CNN_TRIG fired (score > %.4f)",
+                     $time, $itor($signed(P_CNN_THRESH)) / 256.0);
+        end
+    end
+
     // -------------------------------------------------------------------------
     // Main stimulus
     // -------------------------------------------------------------------------
@@ -174,7 +192,7 @@ module tb_thermal;
         $fwrite(f_wave,
             "# chunk_id,sample_idx,ch0,ch1,ch2,ch3\n");
         $fwrite(f_results,
-            "# chunk_id,l0_time_ns,cnn_fired,cnn_raw_hex,cnn_score_float,chunk_overflow\n");
+            "# chunk_id,l0_time_ns,cnn_fired,cnn_raw_hex,cnn_score_float,l1_cnn_trig,chunk_overflow\n");
 
         // ------------------------------------------------------------------
         // Open stimulus
@@ -199,8 +217,9 @@ module tb_thermal;
         repeat(3) @(posedge clk_adc);
 
         $display("[%0t] Reset released. Streaming thermal noise stimulus.", $time);
-        $display("  THRESH=%0d  HILO_WIN=%0d  COINC_WIN=%0d  BIN_THR=%0d",
-                 P_THRESH, P_HILO_WINDOW, P_COINC_WINDOW, P_BIN_THR);
+        $display("  THRESH=%0d  HILO_WIN=%0d  COINC_WIN=%0d  BIN_THR=%0d  CNN_THRESH=%0d (score>%.4f)",
+                 P_THRESH, P_HILO_WINDOW, P_COINC_WINDOW, P_BIN_THR,
+                 $signed(P_CNN_THRESH), $itor($signed(P_CNN_THRESH)) / 256.0);
 
         // ------------------------------------------------------------------
         // Main streaming loop
@@ -236,9 +255,10 @@ module tb_thermal;
                 $display("\n=== [%0t] L0_PRE_TRIG — chunk %0d / %0d ===",
                          $time, trig_count, N_CHUNKS_CAPTURE);
 
-                // Reset CNN capture flag for this chunk
+                // Reset CNN / L1 capture flags for this chunk
                 cnn_cap_valid = 0;
                 cnn_cap_data  = 0;
+                l1_cap_valid  = 0;
 
                 // ----------------------------------------------------------
                 // Alignment cycle: PRE_TRIG is combinational and settles in
@@ -355,10 +375,11 @@ module tb_thermal;
                         $itor($signed(cnn_cap_data[16:0])) / 256.0;
                     automatic real cnn_prob =
                         cnn_cap_valid ? 1.0 / (1.0 + $exp(-cnn_score)) : 0.0;
-                    $fwrite(f_results, "%0d,%.1f,%0d,0x%08h,%.6f,%0d\n",
+                    $fwrite(f_results, "%0d,%.1f,%0d,0x%08h,%.6f,%0d,%0d\n",
                             trig_count, l0_time,
                             cnn_cap_valid ? 1 : 0,
                             cnn_cap_data, cnn_score,
+                            l1_cap_valid ? 1 : 0,
                             chunk_overflow);
                     $fflush(f_results);
                     $display("  CNN prob  = %.4f  (cnn_fired=%0d)",

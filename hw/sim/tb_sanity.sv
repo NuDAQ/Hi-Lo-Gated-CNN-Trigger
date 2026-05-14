@@ -50,6 +50,10 @@ module tb_sanity;
     parameter logic [ 5:0] P_COINC_WINDOW = 6'd20;
     parameter logic [ 3:0] P_BIN_THR      = 4'd1;     // single-channel, easiest
 
+    // CNN inference threshold: score = $signed(CNN_OUT_DATA[16:0]) / 256.0
+    // L1 fires when score > P_CNN_THRESH / 256.0  (e.g. 128 → threshold 0.5)
+    parameter logic signed [16:0] P_CNN_THRESH = 17'sd128;
+
     // Number of dummy (zero) batches to feed before each event chunk.
     // Must be ≥ ring_buf depth (10 = 8 pre-trigger + 2 pipeline-delay entries)
     // so the ring buffer is fully primed before event data arrives.
@@ -90,6 +94,7 @@ module tb_sanity;
     wire [31:0] cnn_out_data;
     wire        cnn_out_valid;
     reg         cnn_out_ready;
+    wire        l1_cnn_trig;
     wire        chunk_overflow;
 
     // -------------------------------------------------------------------------
@@ -109,6 +114,8 @@ module tb_sanity;
         .CNN_OUT_DATA   (cnn_out_data),
         .CNN_OUT_VALID  (cnn_out_valid),
         .CNN_OUT_READY  (cnn_out_ready),
+        .CNN_THRESH     (P_CNN_THRESH),
+        .L1_CNN_TRIG    (l1_cnn_trig),
         .CHUNK_OVERFLOW (chunk_overflow)
     );
 
@@ -204,6 +211,17 @@ module tb_sanity;
         end
     end
 
+    // L1 CNN trigger capture — fires 1 CLK_CNN cycle after CNN_OUT handshake
+    logic l1_cap_valid = 0;
+
+    always @(posedge clk_cnn) begin
+        if (l1_cnn_trig && !l1_cap_valid) begin
+            l1_cap_valid = 1;
+            $display("  [%0t] ** L1_CNN_TRIG captured (score > %.4f) **",
+                     $time, $itor($signed(P_CNN_THRESH)) / 256.0);
+        end
+    end
+
     // -------------------------------------------------------------------------
     // Main test
     // -------------------------------------------------------------------------
@@ -240,7 +258,7 @@ module tb_sanity;
             $finish;
         end
         $fwrite(f_wave,    "# ev_id,sample_idx,ch0,ch1,ch2,ch3\n");
-        $fwrite(f_results, "# ev_id,type,l0_fired,l0_time_ns,ev_start_ns,cnn_fired,cnn_raw_hex,cnn_score_float,pass\n");
+        $fwrite(f_results, "# ev_id,type,l0_fired,l0_time_ns,ev_start_ns,cnn_fired,cnn_raw_hex,cnn_score_float,l1_cnn_trig,pass\n");
 
         // ------------------------------------------------------------------
         // Reset
@@ -254,8 +272,9 @@ module tb_sanity;
         repeat(5) @(posedge clk_adc);
         data_str = 1;
         $display("[%0t] Reset released. Starting sanity test.", $time);
-        $display("  THRESH=%0d  HILO_WIN=%0d  COINC_WIN=%0d  BIN_THR=%0d  N_PRIME=%0d",
-                 P_THRESH, P_HILO_WINDOW, P_COINC_WINDOW, P_BIN_THR, N_PRIME);
+        $display("  THRESH=%0d  HILO_WIN=%0d  COINC_WIN=%0d  BIN_THR=%0d  N_PRIME=%0d  CNN_THRESH=%0d (score>%.4f)",
+                 P_THRESH, P_HILO_WINDOW, P_COINC_WINDOW, P_BIN_THR, N_PRIME,
+                 $signed(P_CNN_THRESH), $itor($signed(P_CNN_THRESH)) / 256.0);
 
         pass_count = 0;
         fail_count = 0;
@@ -272,6 +291,7 @@ module tb_sanity;
             l0_cap_time  = -1.0;
             cnn_cap_valid = 0;
             cnn_cap_data  = 0;
+            l1_cap_valid  = 0;
 
             // --- Prime ring buffer with N_PRIME zero batches ---
             for (b = 0; b < N_PRIME; b++) begin
@@ -327,11 +347,12 @@ module tb_sanity;
             // --- Pass/fail evaluation ---
             cnn_score = $itor($signed(cnn_cap_data[16:0])) / 256.0;
 
+            // L1 is the hardware threshold decision; use it as primary criterion.
+            // CNN_SCORE_THRESH kept for reference display only.
             if (chunk_type[ev] == "sig") begin
-                pass = l0_cap_valid && cnn_cap_valid &&
-                       ($signed(cnn_cap_data[16:0]) > CNN_SCORE_THRESH);
-                $display("  Signal check: l0=%0d  cnn=%0d  score=%.4f  -> %s",
-                         l0_cap_valid, cnn_cap_valid, cnn_score, pass ? "PASS" : "FAIL");
+                pass = l0_cap_valid && l1_cap_valid;
+                $display("  Signal check: l0=%0d  l1=%0d  score=%.4f  -> %s",
+                         l0_cap_valid, l1_cap_valid, cnn_score, pass ? "PASS" : "FAIL");
             end else begin
                 if (!l0_cap_valid) begin
                     pass = 1;
@@ -340,9 +361,9 @@ module tb_sanity;
                     pass = 0;
                     $display("  Noise check:  l0=1  cnn=TIMEOUT  -> FAIL");
                 end else begin
-                    pass = ($signed(cnn_cap_data[16:0]) <= CNN_SCORE_THRESH);
-                    $display("  Noise check:  l0=1  score=%.4f (must be ≤0.5)  -> %s",
-                             cnn_score, pass ? "PASS" : "FAIL");
+                    pass = !l1_cap_valid;
+                    $display("  Noise check:  l0=1  l1=%0d  score=%.4f (L1 must not fire)  -> %s",
+                             l1_cap_valid, cnn_score, pass ? "PASS" : "FAIL");
                 end
             end
 
@@ -350,10 +371,11 @@ module tb_sanity;
             else       fail_count++;
 
             $fwrite(f_results,
-                    "%0d,%s,%0d,%.1f,%.1f,%0d,0x%08h,%.6f,%0d\n",
+                    "%0d,%s,%0d,%.1f,%.1f,%0d,0x%08h,%.6f,%0d,%0d\n",
                     ev, chunk_type[ev],
                     l0_cap_valid, l0_cap_time, ev_start_time_ns,
-                    cnn_cap_valid, cnn_cap_data, cnn_score, pass);
+                    cnn_cap_valid, cnn_cap_data, cnn_score,
+                    l1_cap_valid, pass);
         end
 
         // ------------------------------------------------------------------

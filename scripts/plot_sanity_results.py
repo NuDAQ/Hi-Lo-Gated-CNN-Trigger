@@ -130,6 +130,7 @@ def plot_event(ev_id: int,
                l0_sample: float,
                cnn_fired: bool,
                cnn_score: float,
+               l1_fired: bool,
                thresh: int,
                bin_thr: int,
                sigma_scale: float,
@@ -212,13 +213,14 @@ def plot_event(ev_id: int,
     ax_m.tick_params(labelsize=8)
     ax_m.grid(axis="x", lw=0.3, alpha=0.5)
 
-    # ---- CNN score annotation ----
+    # ---- CNN score + L1 trigger annotation ----
     score_str = f"CNN score = {cnn_score:.4f} ({'fired' if cnn_fired else 'no output'})"
+    l1_str    = f"L1_CNN_TRIG = {'1 ✓' if l1_fired else '0'}"
     result_str = "✓ PASS" if pass_flag else "✗ FAIL"
     result_color = "green" if pass_flag else "red"
 
     fig.text(0.97, 0.97,
-             f"{result_str}\n{score_str}",
+             f"{result_str}\n{score_str}\n{l1_str}",
              ha="right", va="top", fontsize=10,
              color=result_color,
              bbox=dict(boxstyle="round,pad=0.3",
@@ -291,7 +293,7 @@ def main():
     results_df = pd.read_csv(results_path, comment="#",
                               names=["ev_id", "type", "l0_fired", "l0_time_ns",
                                      "ev_start_ns", "cnn_fired", "cnn_raw_hex",
-                                     "cnn_score_float", "pass"])
+                                     "cnn_score_float", "l1_cnn_trig", "pass"])
     print(f"Loaded results: {len(results_df)} events")
     print(results_df.to_string(index=False))
 
@@ -330,11 +332,12 @@ def main():
             continue
         row = row.iloc[0]
 
-        ev_type   = str(row["type"]).strip()
-        l0_fired  = bool(int(row["l0_fired"]))
-        cnn_fired = bool(int(row["cnn_fired"]))
-        cnn_score = float(row["cnn_score_float"])
-        pass_flag = bool(int(row["pass"]))
+        ev_type    = str(row["type"]).strip()
+        l0_fired   = bool(int(row["l0_fired"]))
+        cnn_fired  = bool(int(row["cnn_fired"]))
+        cnn_score  = float(row["cnn_score_float"])
+        l1_fired   = bool(int(row["l1_cnn_trig"]))
+        pass_flag  = bool(int(row["pass"]))
 
         # Convert L0 trigger time to sample index within the 256-sample event chunk.
         # Pipeline: ADC_STREAM_FIFO(1 cycle) + PRE_TRIGGER_1CH(1 cycle) +
@@ -381,6 +384,7 @@ def main():
             l0_sample   = l0_sample,
             cnn_fired   = cnn_fired,
             cnn_score   = cnn_score,
+            l1_fired    = l1_fired,
             thresh      = args.thresh,
             bin_thr     = args.bin_thr,
             sigma_scale = args.sigma_scale,
@@ -402,7 +406,9 @@ def main():
         fail_rows = results_df[results_df["pass"] == 0]
         for _, r in fail_rows.iterrows():
             print(f"  FAIL: event {int(r['ev_id'])} [{r['type']}]  "
-                  f"l0_fired={int(r['l0_fired'])}  cnn_score={float(r['cnn_score_float']):.4f}")
+                  f"l0_fired={int(r['l0_fired'])}  "
+                  f"l1_cnn_trig={int(r['l1_cnn_trig'])}  "
+                  f"cnn_score={float(r['cnn_score_float']):.4f}")
     print(f"{'='*50}\n")
 
 

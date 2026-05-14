@@ -35,6 +35,8 @@ entity HILO_CNN_TRIGGER_TB_WRAP is
         CNN_OUT_DATA   : out std_logic_vector(31 downto 0);
         CNN_OUT_VALID  : out std_logic;
         CNN_OUT_READY  : in  std_logic;
+        CNN_THRESH     : in  std_logic_vector(16 downto 0);
+        L1_CNN_TRIG    : out std_logic;
         CHUNK_OVERFLOW : out std_logic
     );
 end entity HILO_CNN_TRIGGER_TB_WRAP;
@@ -73,6 +75,8 @@ begin
             CNN_OUT_DATA   => CNN_OUT_DATA,
             CNN_OUT_VALID  => CNN_OUT_VALID,
             CNN_OUT_READY  => CNN_OUT_READY,
+            CNN_THRESH     => CNN_THRESH,
+            L1_CNN_TRIG    => L1_CNN_TRIG,
             CHUNK_OVERFLOW => CHUNK_OVERFLOW
         );
 

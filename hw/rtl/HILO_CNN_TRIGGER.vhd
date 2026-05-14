@@ -3,6 +3,7 @@
 
 library ieee;
 use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
 use work.pre_trigger_pkg.all;
 
 -- ----------------------------------------------------------------------------
@@ -59,6 +60,18 @@ entity HILO_CNN_TRIGGER is
         CNN_OUT_VALID  : out std_logic;
         CNN_OUT_READY  : in  std_logic;
 
+        -- CNN inference threshold (CLK_CNN domain, static during operation).
+        -- Signed 17-bit fixed-point, same format as CNN_OUT_DATA[16:0]:
+        --   L1 threshold score = CNN_THRESH / 256.0
+        --   e.g. CNN_THRESH = 17'sd128  →  threshold = 0.5
+        CNN_THRESH     : in  std_logic_vector(16 downto 0);
+
+        -- L1 CNN trigger (CLK_CNN domain).
+        -- 1-cycle pulse fired one CLK_CNN cycle after a CNN_OUT handshake
+        -- whose score exceeds CNN_THRESH.  CDC to CLK_ADC domain is the
+        -- responsibility of the instantiating level.
+        L1_CNN_TRIG    : out std_logic;
+
         -- Status (CLK_ADC domain)
         -- Sticky; set when a trigger is dropped because the circular queue is
         -- full (outside blanking). Cleared by RST only.
@@ -101,18 +114,46 @@ architecture structural of HILO_CNN_TRIGGER is
     signal pre_trig_int  : std_logic;
 
     -- CNN handshake (CLK_CNN domain)
-    signal rst_n_cnn     : std_logic;
-    signal cnn_start     : std_logic;
-    signal cnn_done      : std_logic;
-    signal cnn_idle      : std_logic;
-    signal cnn_ready     : std_logic;
-    signal cnn_in_data   : std_logic_vector(63 downto 0);
-    signal cnn_in_valid  : std_logic;
-    signal cnn_in_ready  : std_logic;
+    signal rst_n_cnn      : std_logic;
+    signal cnn_start      : std_logic;
+    signal cnn_done       : std_logic;
+    signal cnn_idle       : std_logic;
+    signal cnn_ready      : std_logic;
+    signal cnn_in_data    : std_logic_vector(63 downto 0);
+    signal cnn_in_valid   : std_logic;
+    signal cnn_in_ready   : std_logic;
+
+    -- Internal readback signals for WRAPPER_TOP outputs (needed for comparator)
+    signal cnn_out_data_i  : std_logic_vector(31 downto 0);
+    signal cnn_out_valid_i : std_logic;
+    signal l1_cnn_trig_i   : std_logic := '0';
 
 begin
 
-    L0_PRE_TRIG <= pre_trig_int;
+    L0_PRE_TRIG   <= pre_trig_int;
+    CNN_OUT_DATA  <= cnn_out_data_i;
+    CNN_OUT_VALID <= cnn_out_valid_i;
+    L1_CNN_TRIG   <= l1_cnn_trig_i;
+
+    -- -------------------------------------------------------------------------
+    -- L1 CNN trigger comparator (CLK_CNN domain)
+    -- Fires for exactly 1 CLK_CNN cycle, one cycle after the CNN_OUT handshake,
+    -- when the signed score (CNN_OUT_DATA[16:0] / 256.0) exceeds CNN_THRESH.
+    -- Default: 0 every cycle; only set on a qualifying handshake.
+    -- -------------------------------------------------------------------------
+    p_l1_trig : process(CLK_CNN)
+    begin
+        if rising_edge(CLK_CNN) then
+            l1_cnn_trig_i <= '0';
+            if rst_n_cnn = '1' then
+                if cnn_out_valid_i = '1' and CNN_OUT_READY = '1' then
+                    if signed(cnn_out_data_i(16 downto 0)) > signed(CNN_THRESH) then
+                        l1_cnn_trig_i <= '1';
+                    end if;
+                end if;
+            end if;
+        end if;
+    end process p_l1_trig;
 
     -- -------------------------------------------------------------------------
     -- Elastic FIFO: absorbs rate mismatch when CLK_ADC > ADC batch rate.
@@ -183,8 +224,8 @@ begin
             input_data   => cnn_in_data,
             input_valid  => cnn_in_valid,
             input_ready  => cnn_in_ready,
-            output_data  => CNN_OUT_DATA,
-            output_valid => CNN_OUT_VALID,
+            output_data  => cnn_out_data_i,
+            output_valid => cnn_out_valid_i,
             output_ready => CNN_OUT_READY
         );
 
