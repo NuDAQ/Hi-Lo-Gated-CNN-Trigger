@@ -48,9 +48,11 @@ entity HILO_CNN_TRIGGER is
         CNN_OUT_READY  : in  std_logic;
 
         -- Status (CLK_ADC domain)
-        -- Sticky; set when a trigger is dropped because both ping-pong buffers
-        -- are full or capture is already in progress. Cleared by RST only.
-        CHUNK_OVERFLOW : out std_logic
+        -- Sticky; set when a trigger is dropped because the circular queue is
+        -- full (outside blanking). Cleared by RST only.
+        CHUNK_OVERFLOW : out std_logic;
+        -- High while rate-based L0 blanking is active (noise suppression).
+        L0_BLANKING    : out std_logic
     );
 end HILO_CNN_TRIGGER;
 
@@ -127,7 +129,8 @@ begin
             CNN_IN_DATA    => cnn_in_data,
             CNN_IN_VALID   => cnn_in_valid,
             CNN_IN_READY   => cnn_in_ready,
-            CHUNK_OVERFLOW => CHUNK_OVERFLOW
+            CHUNK_OVERFLOW => CHUNK_OVERFLOW,
+            L0_BLANKING    => L0_BLANKING
         );
 
     -- -------------------------------------------------------------------------

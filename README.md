@@ -14,7 +14,7 @@ HILO_CNN_TRIGGER              hw/rtl/HILO_CNN_TRIGGER.vhd   (top-level, structur
 ├── PRE_TRIGGER               [dep: hilo-trigger v2.2.4]    — L0 bipolar pre-trigger
 │   ├── PRE_TRIGGER_1CH × 4
 │   └── MULT2BIN × 32
-├── CNN_CHUNK_CAPTURE         hw/rtl/CNN_CHUNK_CAPTURE.vhd  — ring buffer + ping-pong + CDC
+├── CNN_CHUNK_CAPTURE         hw/rtl/CNN_CHUNK_CAPTURE.vhd  — ring buffer + 12-buffer circular queue + rate blanking + CDC
 └── WRAPPER_TOP               [dep: cnn-core-wrapper v1.0.1] — CNN AXI-Stream wrapper
     └── cnn_core              [dep: cnn-core v1.0.4]         — HLS-generated RTL
 ```
@@ -33,10 +33,11 @@ ADC_DATA4  (4 ch × 16 samples × 12-bit, CLK_ADC domain)
               │
               │  CLK_ADC: Pre-trigger ring buffer (8 batches = 128 samples)
               │           Post-trigger capture    (8 batches = 128 samples)
-              │           Total chunk: 256 samples → BRAM ping-pong
+              │           Total chunk: 256 samples → 12-buffer circular queue
+              │           Rate monitor → L0_BLANKING (noise suppression)
               │
-              │  [True Dual-Port BRAM, 512 × 64-bit]
-              │  [4-phase CDC handshake]
+              │  [True Dual-Port BRAM, 3072 × 64-bit (12 × 256)]
+              │  [4-phase CDC handshake, 12-bit wide]
               │
               │  CLK_CNN: Stream 256 × 64-bit words to WRAPPER_TOP
               │
@@ -91,7 +92,8 @@ so batch-level alignment is sufficient.
 | `CNN_OUT_DATA`  | out | 32    | CLK_CNN  | CNN inference score (AXI-S data)         |
 | `CNN_OUT_VALID` | out | 1     | CLK_CNN  | AXI-S valid                             |
 | `CNN_OUT_READY` | in  | 1     | CLK_CNN  | AXI-S ready                             |
-| `CHUNK_OVERFLOW`| out | 1     | CLK_ADC  | Sticky: trigger dropped (buffer full)   |
+| `CHUNK_OVERFLOW`| out | 1     | CLK_ADC  | Sticky: trigger dropped (circular queue full, outside blanking) |
+| `L0_BLANKING`   | out | 1     | CLK_ADC  | High while rate-based L0 noise blanking is active |
 
 #### Instantiating for Multiple Antenna Pairs
 
@@ -106,12 +108,36 @@ u_TRIG_B : entity work.HILO_CNN_TRIGGER
     port map (ADC_DATA4 => adc(4 to 7), CLK_ADC => clk_adc, ...);
 ```
 
-#### Ping-Pong Buffer and Overflow Behaviour
+#### 12-Buffer Circular Queue and Rate-Based L0 Blanking
 
-Two BRAM buffers allow one event to be fed to the CNN while the ADC side
-captures the next. A third concurrent trigger is dropped and `CHUNK_OVERFLOW`
-is set (sticky until `RST`). Wire `CHUNK_OVERFLOW` to an ILA probe or a
-slow-control status register for run-time monitoring.
+**Circular queue** — `CNN_CHUNK_CAPTURE` maintains 12 BRAM slots (3072 × 64-bit).
+The ADC side writes to `wr_ptr` and advances it mod 12 after each chunk; the CNN
+side reads from `rd_ptr` (also mod 12) in strict FIFO order.  With a CNN latency
+< 17 µs and a design goal of ≤ 1 trigger per 20 µs, the 12-slot depth absorbs
+Poisson bursts with ≈ 2σ headroom before blanking engages.
+
+**Rate-based L0 blanking** — A fixed-window rate monitor (50 µs, 3125 CLK_ADC
+cycles) counts *all* raw L0 pulses, including those that arrive while blanking
+is already active.  All threshold parameters are compile-time constants in
+`CNN_CHUNK_CAPTURE.vhd`:
+
+| Constant        | Default | Meaning                                      |
+|-----------------|---------|----------------------------------------------|
+| `N_BUF`         | 12      | Circular queue depth                         |
+| `WINDOW_CYCLES` | 3125    | Rate-monitor window (50 µs @ 62.5 MHz)       |
+| `HI_THRESH`     | 10      | Enter blanking: ≥ 10 L0 per window (1/5 µs)  |
+| `LO_THRESH`     | 3       | Exit blanking:  ≤ 3  L0 per window (<1/15 µs)|
+
+Blanking is evaluated only at each window boundary (natural hold-off).
+The exit condition is **both** rate ≤ `LO_THRESH` **and** the circular queue
+fully drained — preventing a premature restart while CNN is still draining
+buffered noise events.
+
+During blanking, L0 pulses are **silently discarded** — `CHUNK_OVERFLOW` is
+*not* set (intentional discard differs from a resource overflow).
+`CHUNK_OVERFLOW` fires only when a non-blanking L0 arrives but `wr_ptr`'s slot
+is still occupied by an unprocessed buffer.  Wire both `CHUNK_OVERFLOW` and
+`L0_BLANKING` to ILA probes or slow-control status registers for run-time monitoring.
 
 #### CNN_CHUNK_CAPTURE Internal State Machines
 
@@ -119,18 +145,18 @@ slow-control status register for run-time monitoring.
 
 | State       | Action                                                                             |
 |-------------|------------------------------------------------------------------------------------|
-| `ADC_IDLE`  | Continuously overwrites an 8-slot ring buffer (each slot = one 16-sample batch). PRE_TRIGGER has a 2-cycle pipeline latency, so the triggering batch has already landed in `ring_buf[7]` when `L0_PRE_TRIG` rises. |
+| `ADC_IDLE`  | Continuously overwrites an 8-slot ring buffer. If `L0_PRE_TRIG` rises: check `l0_blanking` — if asserted, silently discard; otherwise claim `wr_ptr` slot (set `CHUNK_OVERFLOW` if occupied). |
 | `ADC_POST`  | Captures the 8 batches following the trigger (128 post-trigger samples).           |
-| `ADC_WRITE` | Writes all 256 words (ring + post) to the free BRAM buffer at full CLK_ADC rate. If both buffers are occupied, sets `CHUNK_OVERFLOW` sticky flag and returns to `ADC_IDLE` without writing. |
+| `ADC_WRITE` | Writes all 256 words to `bram[wr_ptr*256 .. wr_ptr*256+255]` at full CLK_ADC rate. Sets `buf_written_adc(wr_ptr)`, advances `wr_ptr` mod `N_BUF`, returns to `ADC_IDLE`. |
 
 **CNN FSM (CLK_CNN)**
 
 | State          | Action                                                                                                     |
 |----------------|------------------------------------------------------------------------------------------------------------|
-| `CC_IDLE`      | Polls `buf_written_cnn` (2-FF synchronized). Guard: `buf_written_cnn='1' AND buf_ack_cnn='0'` — the second term prevents a second inference on the same buffer while the ACK is propagating back. |
-| `CC_STREAM`    | Asserts `CNN_START` + `CNN_IN_VALID` + first BRAM word simultaneously on the first CLK_CNN edge. Holds `CNN_IN_VALID` high for all 256 words with no gaps. Clears `CNN_START` only when `CNN_READY` rises (`ap_ctrl_hs` requirement). |
-| `CC_WAIT_DONE` | Waits for `CNN_OUT_VALID` (equivalent to `ap_done`).                                                       |
-| `CC_ACK`       | Sets `buf_ack_cnn` to release the buffer back to the ADC side; returns to `CC_IDLE`.                       |
+| `CC_IDLE`      | Checks `buf_written_cnn(rd_ptr)='1' AND buf_ack_cnn(rd_ptr)='0'`. Processes buffers in FIFO order; waits if `rd_ptr`'s slot is not yet written. |
+| `CC_STREAM`    | Asserts `CNN_START` + `CNN_IN_VALID` + first BRAM word simultaneously. Holds `CNN_IN_VALID` high for all 256 words with no gaps. Clears `CNN_START` only when `CNN_READY` rises (`ap_ctrl_hs`). |
+| `CC_WAIT_DONE` | Waits for `CNN_DONE` (`ap_done`).                                                                           |
+| `CC_ACK`       | Sets `buf_ack_cnn(cnn_buf_id)`, advances `rd_ptr` mod `N_BUF`, returns to `CC_IDLE`.                      |
 
 **CDC Handshake Protocol**
 
@@ -141,7 +167,7 @@ The handshake uses a 4-phase set/clear protocol, not a single-cycle pulse:
 3. CNN side sets `buf_ack_cnn` (CLK_CNN domain) after inference completes.
 4. `buf_ack_adc` (synchronized back to CLK_ADC) clears `buf_written_adc`.
 
-Both `buf_written_adc` and `buf_ack_cnn` are held until the other side acknowledges. This tolerates arbitrary clock-domain skew without a pulse-stretcher.
+Both `buf_written_adc` and `buf_ack_cnn` are held until the other side acknowledges. This tolerates arbitrary clock-domain skew without a pulse-stretcher.  Both signals are `N_BUF`-bit vectors; each bit corresponds to one circular-queue slot.
 
 **RST Synchronizer Initialization**
 
@@ -166,11 +192,16 @@ stimulus is pre-converted from the ARIANNA thermal noise dataset
 **Running**
 
 ```bash
-cd <project root>
 bash scripts/run_thermal_sim.sh [--skip-data] [--skip-plot]
 ```
 
 `--skip-data` reuses an existing `stimulus.txt`; `--skip-plot` skips the Python plotting step.
+
+**Sample output** (CNN probability should be well below 0.5 for all thermal chunks):
+
+![Chunk 0](hw/sim/thermal_data/plots/chunk_0_thermal.png)
+![Chunk 1](hw/sim/thermal_data/plots/chunk_1_thermal.png)
+![Chunk 2](hw/sim/thermal_data/plots/chunk_2_thermal.png)
 
 **Default trigger configuration**
 
@@ -295,11 +326,13 @@ Add `.xdc` constraint files manually (not managed by Bender).
 
 3. **CHUNK_OVERFLOW set during high-amplitude events.**
    A single signal event with amplitude well above THRESH can cause
-   `L0_PRE_TRIG` to re-assert during the `ADC_POST` capture phase, because
+   `L0_PRE_TRIG` to re-assert during the `ADC_POST` capture phase because
    successive batches continue to exceed the bipolar threshold. The ADC FSM
-   discards these secondary triggers (buffer is already occupied) and sets
+   discards these secondary triggers (capture already in progress) and sets
    `CHUNK_OVERFLOW`. This is expected behavior; it does not indicate a timing
-   collision between separate events.
+   collision between separate events.  Note: environmental noise bursts that
+   would cause this are suppressed by the rate-based blanking mechanism before
+   `CHUNK_OVERFLOW` has time to accumulate.
 
 ## Developer Notes
 
@@ -309,9 +342,12 @@ Add `.xdc` constraint files manually (not managed by Bender).
 - **Changing batch size**: `N_SAMPLES` (16 by default) is a package constant in
   `hilo-trigger`. Changing it requires a coordinated update of that dependency
   and all files in this repo that assume 16 samples per batch.
-- **CHUNK_OVERFLOW**: non-zero overflow during a run indicates the CNN
-  inference time is longer than the mean trigger inter-arrival time.
-  Reduce the trigger rate, increase `BIN_THR`, or widen `THRESH`.
+- **CHUNK_OVERFLOW**: fires only outside blanking, when all 12 circular-queue
+  slots are occupied.  Under normal neutrino-signal rates (≪ 1/20 µs) this
+  should never fire.  If it does during physics running, reduce the trigger rate
+  (increase `BIN_THR` or widen `THRESH`) or increase `N_BUF`.
+  `L0_BLANKING` engaging is the normal response to noise bursts and does not
+  constitute an overflow.
 - **Mixed-language simulation**: `HILO_CNN_TRIGGER_TB_WRAP.vhd` bridges the
   flat SV vector to `adc_data4_type`. Packing convention must match the
   generate block in `tb_hilo_cnn_trigger.sv` — both use MSB-first, ch0 at

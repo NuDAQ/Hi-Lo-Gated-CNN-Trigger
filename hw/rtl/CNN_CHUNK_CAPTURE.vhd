@@ -20,13 +20,22 @@ use work.pre_trigger_pkg.all;
 --   [63:48] ch3  [47:32] ch2  [31:16] ch1  [15:0] ch0
 --   Each channel: 4-bit zero pad + 12-bit ADC value
 --
--- Ping-pong buffer:
---   BRAM 512 × 64-bit:  Buffer 0 = addr 0–255, Buffer 1 = addr 256–511
---   CDC: 4-phase set/clear handshake via 2-FF synchronizers
+-- N_BUF-deep circular queue:
+--   BRAM N_BUF*256 × 64-bit: Buffer i occupies addr i*256 .. i*256+255
+--   ADC writes at wr_ptr, CNN reads at rd_ptr; both advance mod N_BUF.
+--   CDC: N_BUF-bit-wide 4-phase set/clear handshake via 2-FF synchronizers.
+--
+-- Rate-based L0 blanking (CLK_ADC domain):
+--   A fixed WINDOW_CYCLES window counts ALL raw L0 pulses (even during
+--   blanking, so the FSM detects when noise truly subsides).
+--   • Enter BLANKING when rate_cnt ≥ HI_THRESH at window end.
+--   • Exit  BLANKING when rate_cnt ≤ LO_THRESH AND queue is empty.
+--   During blanking the ADC FSM silently discards L0 pulses without setting
+--   CHUNK_OVERFLOW (intentional discard ≠ resource overflow).
 --
 -- CHUNK_OVERFLOW (sticky, CLK_ADC):
---   Set when L0_PRE_TRIG fires but no buffer is free or capture is in
---   progress. Cleared only by RST. Connect to a monitoring/ILA port.
+--   Set only when a non-blanking L0 fires but wr_ptr's buffer slot is still
+--   occupied (true resource overflow). Cleared only by RST.
 -- ----------------------------------------------------------------------------
 
 entity CNN_CHUNK_CAPTURE is
@@ -50,79 +59,80 @@ entity CNN_CHUNK_CAPTURE is
         CNN_IN_READY : in  std_logic;
 
         -- Status (CLK_ADC domain)
-        CHUNK_OVERFLOW : out std_logic
+        CHUNK_OVERFLOW : out std_logic;
+        L0_BLANKING    : out std_logic   -- high while noise blanking is active
     );
 end CNN_CHUNK_CAPTURE;
 
 architecture rtl of CNN_CHUNK_CAPTURE is
 
     -- =========================================================================
+    -- Configurable parameters — edit these constants, no interface change needed
+    -- =========================================================================
+    constant N_BUF         : integer := 12;    -- circular queue depth (buffers)
+    constant WINDOW_CYCLES : integer := 3125;  -- rate-monitor window: 50 µs @ 62.5 MHz
+    constant HI_THRESH     : integer := 10;    -- enter blanking: ≥10 L0/window (1 per 5 µs)
+    constant LO_THRESH     : integer := 3;     -- exit  blanking: ≤3  L0/window (<1 per 15 µs)
+
+    -- =========================================================================
     -- Types
     -- =========================================================================
-    -- One batch: 16 packed 64-bit samples
     type batch_t is array(0 to 15) of std_logic_vector(63 downto 0);
-    -- Eight-batch ring / post buffer
     type ring_t  is array(0 to 7)  of batch_t;
 
     -- =========================================================================
-    -- Ring buffer (8 most-recent pre-trigger batches, CLK_ADC domain)
-    -- Shifts on every DATA_STR pulse while in ADC_IDLE.
-    -- Frozen (stops shifting) as soon as a trigger is accepted.
+    -- Pre/post sample buffers (CLK_ADC domain)
     -- =========================================================================
     signal ring_buf : ring_t := (others => (others => (others => '0')));
-
-    -- =========================================================================
-    -- Post-trigger capture buffer (CLK_ADC domain)
-    -- Filled with 8 batches that follow the trigger.
-    -- =========================================================================
     signal post_buf : ring_t := (others => (others => (others => '0')));
 
     -- =========================================================================
-    -- Ping-pong BRAM: 512 × 64-bit
-    -- Buffer 0: addr   0–255   Buffer 1: addr 256–511
-    -- True-dual-port inferred: Port A on CLK_ADC, Port B on CLK_CNN.
-    -- Vivado inference attribute: "block"
+    -- Circular-queue BRAM: N_BUF*256 × 64-bit
+    -- Buffer i: addr i*256 .. i*256+255
+    -- True-dual-port inferred: Port A = CLK_ADC (write), Port B = CLK_CNN (read)
     -- =========================================================================
-    type bram_t is array(0 to 511) of std_logic_vector(63 downto 0);
-    signal bram    : bram_t;
+    type bram_t is array(0 to N_BUF*256-1) of std_logic_vector(63 downto 0);
+    signal bram : bram_t;
     attribute ram_style        : string;
     attribute ram_style of bram : signal is "block";
 
     -- BRAM write port (CLK_ADC)
-    signal wr_en   : std_logic                    := '0';
-    signal wr_addr : unsigned(8 downto 0)         := (others => '0');
+    signal wr_en   : std_logic                     := '0';
+    signal wr_addr : unsigned(11 downto 0)         := (others => '0');
     signal wr_data : std_logic_vector(63 downto 0) := (others => '0');
 
-    -- BRAM read port (CLK_CNN), 1-cycle synchronous latency
-    signal rd_addr : unsigned(8 downto 0)         := (others => '0');
-    signal rd_data : std_logic_vector(63 downto 0);
-
     -- =========================================================================
-    -- CDC signals — 4-phase set/clear handshake
+    -- CDC signals — 4-phase set/clear handshake, N_BUF bits wide
     --
-    -- Protocol (buffer N):
-    --   ADC sets   buf_written_adc(N) = '1'  after finishing a BRAM write
-    --   CDC sync → buf_written_cnn(N)         (2 CLK_CNN cycles latency)
-    --   CNN sets   buf_ack_cnn(N)    = '1'  after CNN_DONE
-    --   CDC sync → buf_ack_adc(N)            (2 CLK_ADC cycles latency)
-    --   ADC clears buf_written_adc(N) = '0'  on seeing buf_ack_adc(N)='1'
-    --   CDC sync → buf_written_cnn(N)='0'
-    --   CNN clears buf_ack_cnn(N)    = '0'  on seeing buf_written_cnn(N)='0'
+    -- Protocol for buffer i:
+    --   ADC sets   buf_written_adc(i) after finishing a BRAM write
+    --   CDC sync → buf_written_cnn(i)  (2 CLK_CNN cycles latency)
+    --   CNN sets   buf_ack_cnn(i)      after CNN_DONE
+    --   CDC sync → buf_ack_adc(i)      (2 CLK_ADC cycles latency)
+    --   ADC clears buf_written_adc(i)  on seeing buf_ack_adc(i)='1'
+    --   CDC sync → buf_written_cnn(i)='0'
+    --   CNN clears buf_ack_cnn(i)      on seeing buf_written_cnn(i)='0'
     -- =========================================================================
-    signal buf_written_adc : std_logic_vector(1 downto 0) := (others => '0');
-    signal buf_written_s1  : std_logic_vector(1 downto 0) := (others => '0');
-    signal buf_written_cnn : std_logic_vector(1 downto 0) := (others => '0');
+    signal buf_written_adc : std_logic_vector(N_BUF-1 downto 0) := (others => '0');
+    signal buf_written_s1  : std_logic_vector(N_BUF-1 downto 0) := (others => '0');
+    signal buf_written_cnn : std_logic_vector(N_BUF-1 downto 0) := (others => '0');
 
-    signal buf_ack_cnn : std_logic_vector(1 downto 0) := (others => '0');
-    signal buf_ack_s1  : std_logic_vector(1 downto 0) := (others => '0');
-    signal buf_ack_adc : std_logic_vector(1 downto 0) := (others => '0');
+    signal buf_ack_cnn : std_logic_vector(N_BUF-1 downto 0) := (others => '0');
+    signal buf_ack_s1  : std_logic_vector(N_BUF-1 downto 0) := (others => '0');
+    signal buf_ack_adc : std_logic_vector(N_BUF-1 downto 0) := (others => '0');
 
     -- RST synchronizer (ADC → CNN domain)
-    -- Initialized to '1' so RST_N_CNN starts at '0' (reset asserted) before
-    -- any CLK_CNN edges.  '0' would make RST_N_CNN='1' at t=0, meaning
-    -- cnn_core runs unreset and enters an undefined state before RST fires.
     signal rst_s1  : std_logic := '1';
     signal rst_cnn : std_logic := '1';
+
+    -- =========================================================================
+    -- Rate monitor + blanking (CLK_ADC domain)
+    -- =========================================================================
+    signal rate_cnt      : integer range 0 to 31             := 0;
+    signal win_timer     : integer range 0 to WINDOW_CYCLES-1 := 0;
+    signal l0_blanking_i : std_logic := '0';  -- internal blanking flag
+    signal buf_any_written : std_logic;       -- OR of all buf_written_adc bits
+    signal fifo_empty    : std_logic;
 
     -- =========================================================================
     -- ADC-domain FSM
@@ -130,10 +140,10 @@ architecture rtl of CNN_CHUNK_CAPTURE is
     type adc_fsm_t is (ADC_IDLE, ADC_POST, ADC_WRITE);
     signal adc_state : adc_fsm_t := ADC_IDLE;
 
-    signal post_cnt  : integer range 0 to 7  := 0;  -- post batches captured
-    signal batch_cnt : integer range 0 to 15 := 0;  -- BRAM write: batch index
-    signal samp_cnt  : integer range 0 to 15 := 0;  -- BRAM write: sample index
-    signal write_sel : std_logic             := '0'; -- target ping-pong buffer
+    signal post_cnt  : integer range 0 to 7  := 0;
+    signal batch_cnt : integer range 0 to 15 := 0;
+    signal samp_cnt  : integer range 0 to 15 := 0;
+    signal wr_ptr    : integer range 0 to N_BUF-1 := 0;
 
     -- =========================================================================
     -- CNN-domain FSM
@@ -141,16 +151,13 @@ architecture rtl of CNN_CHUNK_CAPTURE is
     type cnn_fsm_t is (CC_IDLE, CC_STREAM, CC_WAIT_DONE, CC_ACK);
     signal cnn_state     : cnn_fsm_t    := CC_IDLE;
 
-    signal cnn_base_addr : unsigned(8 downto 0) := (others => '0'); -- 0 or 256
-    signal stream_ptr    : unsigned(7 downto 0) := (others => '0'); -- word 0..255
-    signal cnn_buf_id    : integer range 0 to 1 := 0;
-    -- rd_addr / rd_data / cnn_waiting removed: BRAM is now read directly inside
-    -- the clocked CNN FSM process (no separate read process needed).
+    signal cnn_base_addr : unsigned(11 downto 0) := (others => '0');
+    signal stream_ptr    : unsigned(7 downto 0)  := (others => '0');
+    signal cnn_buf_id    : integer range 0 to N_BUF-1 := 0;
+    signal rd_ptr        : integer range 0 to N_BUF-1 := 0;
 
     -- =========================================================================
     -- Helper: pack one ADC sample (4 channels) into 64 bits
-    -- Layout: [63:48]=ch3 [47:32]=ch2 [31:16]=ch1 [15:0]=ch0
-    -- Each channel: 4-bit zero-pad || 12-bit ADC (two's complement)
     -- =========================================================================
     function pack_sample(d : adc_data4_type; s : integer)
         return std_logic_vector is
@@ -164,6 +171,8 @@ architecture rtl of CNN_CHUNK_CAPTURE is
     end function;
 
 begin
+
+    L0_BLANKING <= l0_blanking_i;
 
     -- =========================================================================
     -- RST → CNN domain: 2-FF synchronizer
@@ -188,13 +197,6 @@ begin
             end if;
         end if;
     end process;
-
-    -- =========================================================================
-    -- BRAM read is now performed directly inside the CNN FSM process below.
-    -- Direct indexing in a clocked process gives exactly the same 1-cycle
-    -- registered semantics as the old separate read process, but allows the
-    -- CNN FSM to issue the read AND present valid data in consecutive cycles
-    -- without a cnn_waiting bubble — matching tb_stream.sv's behaviour.
 
     -- =========================================================================
     -- CDC: buf_written (ADC → CNN), 2-FF synchronizer
@@ -229,6 +231,64 @@ begin
     end process;
 
     -- =========================================================================
+    -- fifo_empty: OR-reduce buf_written_adc; also require ADC FSM to be idle
+    -- (a buffer being written is not yet flagged but the queue is not empty)
+    -- =========================================================================
+    process(buf_written_adc)
+        variable v : std_logic;
+    begin
+        v := '0';
+        for i in 0 to N_BUF-1 loop
+            v := v or buf_written_adc(i);
+        end loop;
+        buf_any_written <= v;
+    end process;
+
+    fifo_empty <= '1' when buf_any_written = '0' and adc_state = ADC_IDLE else '0';
+
+    -- =========================================================================
+    -- Rate monitor + Blanking FSM (CLK_ADC domain)
+    --
+    -- Counts every raw L0_PRE_TRIG in a rolling WINDOW_CYCLES window,
+    -- regardless of blanking state.  Decisions are made at window boundaries
+    -- so the window also acts as a natural hold-off: blanking cannot re-enter
+    -- or re-exit more than once per window.
+    -- =========================================================================
+    process(CLK_ADC)
+    begin
+        if rising_edge(CLK_ADC) then
+            if RST = '1' then
+                rate_cnt      <= 0;
+                win_timer     <= 0;
+                l0_blanking_i <= '0';
+            else
+                -- Saturating count — avoids integer overflow for extreme noise
+                if L0_PRE_TRIG = '1' and rate_cnt < 31 then
+                    rate_cnt <= rate_cnt + 1;
+                end if;
+
+                if win_timer = WINDOW_CYCLES - 1 then
+                    win_timer <= 0;
+                    -- Evaluate threshold at window boundary, then clear counter
+                    if l0_blanking_i = '0' then
+                        if rate_cnt >= HI_THRESH then
+                            l0_blanking_i <= '1';
+                        end if;
+                    else
+                        -- Exit only when rate is low AND queue has drained
+                        if rate_cnt <= LO_THRESH and fifo_empty = '1' then
+                            l0_blanking_i <= '0';
+                        end if;
+                    end if;
+                    rate_cnt <= 0;
+                else
+                    win_timer <= win_timer + 1;
+                end if;
+            end if;
+        end if;
+    end process;
+
+    -- =========================================================================
     -- ADC-domain FSM
     -- =========================================================================
     process(CLK_ADC)
@@ -239,7 +299,7 @@ begin
                 post_cnt        <= 0;
                 batch_cnt       <= 0;
                 samp_cnt        <= 0;
-                write_sel       <= '0';
+                wr_ptr          <= 0;
                 wr_en           <= '0';
                 wr_addr         <= (others => '0');
                 wr_data         <= (others => '0');
@@ -248,25 +308,24 @@ begin
                 ring_buf        <= (others => (others => (others => '0')));
                 post_buf        <= (others => (others => (others => '0')));
             else
-                wr_en <= '0';  -- default: no BRAM write
+                wr_en <= '0';
 
-                -- 4-phase handshake: ADC clears buf_written when it sees ack.
-                -- Guard with buf_written='1' to prevent clearing a new write.
-                if buf_ack_adc(0) = '1' and buf_written_adc(0) = '1' then
-                    buf_written_adc(0) <= '0';
-                end if;
-                if buf_ack_adc(1) = '1' and buf_written_adc(1) = '1' then
-                    buf_written_adc(1) <= '0';
-                end if;
+                -- 4-phase handshake: ADC clears buf_written when it sees ack
+                for i in 0 to N_BUF-1 loop
+                    if buf_ack_adc(i) = '1' and buf_written_adc(i) = '1' then
+                        buf_written_adc(i) <= '0';
+                    end if;
+                end loop;
 
                 case adc_state is
 
                     -- ----------------------------------------------------------
-                    -- ADC_IDLE: continuously roll the ring buffer; watch for L0.
+                    -- ADC_IDLE: continuously roll the pre-trigger ring buffer.
+                    -- On L0: if blanking, discard silently; otherwise claim
+                    -- wr_ptr slot (or flag overflow if it is still occupied).
                     -- ----------------------------------------------------------
                     when ADC_IDLE =>
                         if DATA_STR = '1' then
-                            -- Shift ring: [7]←[6]←…←[0]←current batch
                             ring_buf(7) <= ring_buf(6);
                             ring_buf(6) <= ring_buf(5);
                             ring_buf(5) <= ring_buf(4);
@@ -280,32 +339,25 @@ begin
                         end if;
 
                         if L0_PRE_TRIG = '1' then
-                            -- A buffer is "free" only when both written AND ack
-                            -- flags are clear (full 4-phase handshake complete).
-                            if buf_written_adc(0) = '0' and buf_ack_adc(0) = '0' then
-                                write_sel <= '0';
-                                post_cnt  <= 0;
-                                adc_state <= ADC_POST;
-                            elsif buf_written_adc(1) = '0' and buf_ack_adc(1) = '0' then
-                                write_sel <= '1';
-                                post_cnt  <= 0;
-                                adc_state <= ADC_POST;
-                            else
-                                -- Both buffers occupied — trigger dropped.
-                                CHUNK_OVERFLOW <= '1';
+                            if l0_blanking_i = '0' then
+                                if buf_written_adc(wr_ptr) = '0' and
+                                   buf_ack_adc(wr_ptr) = '0' then
+                                    post_cnt  <= 0;
+                                    adc_state <= ADC_POST;
+                                else
+                                    -- wr_ptr slot still occupied: true overflow
+                                    CHUNK_OVERFLOW <= '1';
+                                end if;
                             end if;
+                            -- l0_blanking_i = '1': intentional discard, no flag
                         end if;
 
                     -- ----------------------------------------------------------
-                    -- ADC_POST: capture 4 post-trigger batches.
-                    -- Ring buffer is now frozen (we left ADC_IDLE).
-                    -- New triggers during this phase are dropped (overflow).
+                    -- ADC_POST: capture 8 post-trigger batches (128 samples).
+                    -- Ring buffer is frozen; new L0 pulses are silently dropped
+                    -- (blanking should be active before this becomes an issue).
                     -- ----------------------------------------------------------
                     when ADC_POST =>
-                        if L0_PRE_TRIG = '1' then
-                            CHUNK_OVERFLOW <= '1';
-                        end if;
-
                         if DATA_STR = '1' then
                             for s in 0 to 15 loop
                                 post_buf(post_cnt)(s) <= pack_sample(ADC_DATA4, s);
@@ -321,45 +373,35 @@ begin
                         end if;
 
                     -- ----------------------------------------------------------
-                    -- ADC_WRITE: stream 16 batches (256 words) into the selected
-                    -- BRAM buffer at full CLK_ADC rate (no throttle needed).
+                    -- ADC_WRITE: stream 16 batches (256 words) into BRAM buffer
+                    -- wr_ptr at full CLK_ADC rate.
                     --
-                    -- Write order (chronological, oldest first):
+                    -- Write order (oldest sample first):
                     --   batch 0-7  → ring_buf[7..0]  (128 pre-trigger samples)
                     --   batch 8-15 → post_buf[0..7]  (128 post-trigger samples)
                     -- ----------------------------------------------------------
                     when ADC_WRITE =>
-                        if L0_PRE_TRIG = '1' then
-                            CHUNK_OVERFLOW <= '1';
-                        end if;
-
                         wr_en <= '1';
 
-                        -- Address: {write_sel, batch_cnt[3:0], samp_cnt[3:0]}
-                        if write_sel = '0' then
-                            wr_addr <= to_unsigned(batch_cnt * 16 + samp_cnt, 9);
-                        else
-                            wr_addr <= to_unsigned(256 + batch_cnt * 16 + samp_cnt, 9);
-                        end if;
+                        wr_addr <= to_unsigned(
+                            wr_ptr * 256 + batch_cnt * 16 + samp_cnt, 12);
 
-                        -- Source: first 8 batches from ring (oldest→newest),
-                        --         next 8 from post capture.
                         if batch_cnt < 8 then
                             wr_data <= ring_buf(7 - batch_cnt)(samp_cnt);
                         else
                             wr_data <= post_buf(batch_cnt - 8)(samp_cnt);
                         end if;
 
-                        -- Advance sample then batch counters
                         if samp_cnt = 15 then
                             samp_cnt <= 0;
                             if batch_cnt = 15 then
                                 wr_en <= '0';
-                                -- Signal CNN domain: buffer is ready
-                                if write_sel = '0' then
-                                    buf_written_adc(0) <= '1';
+                                buf_written_adc(wr_ptr) <= '1';
+                                -- Advance write pointer (mod N_BUF)
+                                if wr_ptr = N_BUF - 1 then
+                                    wr_ptr <= 0;
                                 else
-                                    buf_written_adc(1) <= '1';
+                                    wr_ptr <= wr_ptr + 1;
                                 end if;
                                 adc_state <= ADC_IDLE;
                             else
@@ -392,6 +434,10 @@ begin
 
     -- =========================================================================
     -- CNN-domain FSM
+    --
+    -- Processes buffers in FIFO order: rd_ptr follows wr_ptr mod N_BUF.
+    -- CC_IDLE waits until buf_written_cnn(rd_ptr) = '1'.  If the ADC is
+    -- still filling that slot, CC_IDLE simply waits — the queue preserves order.
     -- =========================================================================
     process(CLK_CNN)
     begin
@@ -405,76 +451,47 @@ begin
                 stream_ptr    <= (others => '0');
                 cnn_buf_id    <= 0;
                 cnn_base_addr <= (others => '0');
+                rd_ptr        <= 0;
             else
-                -- ap_ctrl_hs protocol: hold CNN_START (ap_start) high until
-                -- CNN_READY (ap_ready) fires to confirm the CNN has accepted
-                -- the start.  Do NOT use a default '0' here — that would clear
-                -- it every cycle and the HLS core would never register it.
+                -- ap_ctrl_hs: hold CNN_START until CNN_READY fires
                 if CNN_READY = '1' then
                     CNN_START <= '0';
                 end if;
 
-                -- 4-phase handshake: CNN clears its ack once the ADC has
-                -- cleared buf_written (visible via buf_written_cnn going low).
-                if buf_written_cnn(0) = '0' then
-                    buf_ack_cnn(0) <= '0';
-                end if;
-                if buf_written_cnn(1) = '0' then
-                    buf_ack_cnn(1) <= '0';
-                end if;
+                -- 4-phase handshake: CNN clears ack once ADC has cleared
+                -- buf_written (visible as buf_written_cnn going low)
+                for i in 0 to N_BUF-1 loop
+                    if buf_written_cnn(i) = '0' then
+                        buf_ack_cnn(i) <= '0';
+                    end if;
+                end loop;
 
                 case cnn_state is
 
                     -- ----------------------------------------------------------
-                    -- CC_IDLE: wait for a buffer to be ready.
-                    -- Prefer buffer 0. Require CNN core to be idle.
-                    -- Issue first BRAM read on entry to CC_STREAM.
-                    -- ----------------------------------------------------------
-                    -- ----------------------------------------------------------
-                    -- CC_IDLE: wait for a buffer to be ready, then start the CNN
-                    -- and present the first word simultaneously — exactly matching
-                    -- tb_stream.sv which raises start and input_valid together.
+                    -- CC_IDLE: wait for rd_ptr's buffer to be marked written.
+                    -- Guard buf_ack_cnn(rd_ptr)='0' prevents re-triggering on
+                    -- the same buffer before the ADC has cleared buf_written.
                     -- ----------------------------------------------------------
                     when CC_IDLE =>
                         CNN_IN_VALID <= '0';
 
-                        -- Guard: only start when the 4-phase ack handshake for
-                        -- this buffer is fully idle (buf_ack_cnn='0').
-                        -- Without this, CC_IDLE would re-trigger on the SAME
-                        -- buffer immediately after CC_ACK sets buf_ack_cnn='1',
-                        -- before the ADC domain has had time to clear
-                        -- buf_written_adc via CDC — causing a duplicate inference.
-                        if buf_written_cnn(0) = '1' and buf_ack_cnn(0) = '0' then
-                            cnn_buf_id    <= 0;
-                            cnn_base_addr <= (others => '0');
+                        if buf_written_cnn(rd_ptr) = '1' and
+                           buf_ack_cnn(rd_ptr) = '0' then
+                            cnn_buf_id    <= rd_ptr;
+                            cnn_base_addr <= to_unsigned(rd_ptr * 256, 12);
                             CNN_START     <= '1';
                             CNN_IN_VALID  <= '1';
-                            CNN_IN_DATA   <= bram(0);   -- word 0 of buffer 0
-                            stream_ptr    <= (others => '0');
-                            cnn_state     <= CC_STREAM;
-
-                        elsif buf_written_cnn(1) = '1' and buf_ack_cnn(1) = '0' then
-                            cnn_buf_id    <= 1;
-                            cnn_base_addr <= to_unsigned(256, 9);
-                            CNN_START     <= '1';
-                            CNN_IN_VALID  <= '1';
-                            CNN_IN_DATA   <= bram(256); -- word 0 of buffer 1
+                            CNN_IN_DATA   <= bram(rd_ptr * 256);  -- word 0
                             stream_ptr    <= (others => '0');
                             cnn_state     <= CC_STREAM;
                         end if;
 
                     -- ----------------------------------------------------------
-                    -- CC_STREAM: feed 256 × 64-bit words to the CNN via AXI-S.
-                    --
-                    -- Matches tb_stream.sv exactly:
-                    --   • CNN_IN_VALID stays '1' for all 256 words (no bubbles).
-                    --   • CNN_IN_DATA is pre-registered in the clocked process:
-                    --       At CC_IDLE we assign CNN_IN_DATA = bram(base+0).
-                    --       After READY='1' on word N we assign bram(base+N+1),
-                    --       which appears on CNN_IN_DATA the next cycle. ✓
-                    --   • CNN_START is held until CNN_READY fires (ap_ctrl_hs).
-                    -- Throughput: 1 word per CLK_CNN cycle (200 MHz effective).
-                    -- Back-pressure: CNN_IN_VALID held; CNN_IN_DATA unchanged.
+                    -- CC_STREAM: feed 256 × 64-bit words to CNN via AXI-S.
+                    -- CNN_IN_VALID stays '1' continuously (no bubbles).
+                    -- CNN_IN_DATA is pre-registered: at entry we present word 0;
+                    -- on each READY we pre-load word N+1 for the next cycle.
                     -- ----------------------------------------------------------
                     when CC_STREAM =>
                         CNN_IN_VALID <= '1';
@@ -485,14 +502,11 @@ begin
                                 cnn_state    <= CC_WAIT_DONE;
                             else
                                 stream_ptr  <= stream_ptr + 1;
-                                -- Pre-register the NEXT word so it is ready on
-                                -- the following clock cycle — no bubble.
                                 CNN_IN_DATA <= bram(to_integer(
                                                   cnn_base_addr
-                                                  + resize(stream_ptr + 1, 9)));
+                                                  + resize(stream_ptr + 1, 12)));
                             end if;
                         end if;
-                        -- CNN_IN_READY='0': hold VALID='1', DATA unchanged.
 
                     -- ----------------------------------------------------------
                     when CC_WAIT_DONE =>
@@ -502,16 +516,17 @@ begin
                         end if;
 
                     -- ----------------------------------------------------------
-                    -- CC_ACK: release the buffer (4-phase handshake step 3).
-                    -- buf_ack_cnn stays set until the ADC domain clears
-                    -- buf_written_adc, which feeds back via buf_written_cnn.
+                    -- CC_ACK: set ack, advance rd_ptr, return to CC_IDLE.
+                    -- buf_ack_cnn stays set until buf_written_cnn goes low
+                    -- (ADC has seen the ack and cleared its side).
                     -- ----------------------------------------------------------
                     when CC_ACK =>
                         CNN_IN_VALID <= '0';
-                        if cnn_buf_id = 0 then
-                            buf_ack_cnn(0) <= '1';
+                        buf_ack_cnn(cnn_buf_id) <= '1';
+                        if rd_ptr = N_BUF - 1 then
+                            rd_ptr <= 0;
                         else
-                            buf_ack_cnn(1) <= '1';
+                            rd_ptr <= rd_ptr + 1;
                         end if;
                         cnn_state <= CC_IDLE;
 
